@@ -1,0 +1,304 @@
+:root {
+  /* rail = dark navy sidebar (spec §3, Ascend SCM concept) */
+  --rail-bg: #1c2536;
+  --rail-text: #c9d2e3;
+  --rail-active: #33415c;
+  /* pastel base */
+  --bg: #f7f8fb;
+  --surface: #ffffff;
+  --text: #26303f;
+  --muted: #6b7688;
+  --accent: #6d7fc9;
+  /* semantic colors — red and amber are NEVER merged (spec §3) */
+  --ok: #4a7c59;
+  --warn: #a8833b;
+  --bad: #b04a4a;
+  --unmodelled: #7a7a7d;
+  /* stage-5 MRP: booked receipts (blue) vs recommended receipts (amber italic) */
+  --info: #4a6d9c;
+  --radius: 10px;
+  --shadow: 0 1px 3px rgba(28, 37, 54, 0.08), 0 4px 14px rgba(28, 37, 54, 0.06);
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, "Segoe UI", Roboto, "Hiragino Sans", sans-serif;
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}
+
+.layout { display: flex; min-height: 100vh; }
+.rail {
+  width: 220px; flex: none; background: var(--rail-bg); color: var(--rail-text);
+  padding: 16px 0; display: flex; flex-direction: column; min-height: 100vh;
+}
+.rail a {
+  display: block; padding: 8px 20px; color: inherit; text-decoration: none;
+  border-left: 3px solid transparent;
+}
+.rail a.active { background: var(--rail-active); border-left-color: var(--accent); }
+.rail .rail-title { padding: 0 20px 16px; font-weight: 600; color: #fff; }
+.rail-spacer { flex: 1; }
+.rail-user {
+  padding: 12px 20px 4px; border-top: 1px solid rgba(255, 255, 255, 0.12);
+  display: flex; flex-direction: column; gap: 4px;
+}
+.rail-user-email { font-size: 13px; color: #fff; overflow-wrap: anywhere; }
+.rail-user-role {
+  align-self: flex-start; font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase;
+  color: var(--rail-text); background: var(--rail-active); border-radius: 999px; padding: 2px 8px;
+}
+.rail-signout {
+  border: 1px solid rgba(255, 255, 255, 0.25); background: none; color: var(--rail-text);
+  border-radius: var(--radius); padding: 6px 10px; cursor: pointer; margin-top: 4px;
+}
+.rail-signout:hover { color: #fff; border-color: rgba(255, 255, 255, 0.5); }
+
+.login-backdrop {
+  min-height: 100vh; display: flex; align-items: center; justify-content: center;
+  background: var(--rail-bg);
+}
+.login-card {
+  background: var(--surface); border-radius: var(--radius); box-shadow: var(--shadow);
+  padding: 32px; width: 320px; display: flex; flex-direction: column; gap: 14px;
+}
+.login-title { font-weight: 600; font-size: 18px; margin-bottom: 6px; color: var(--text); }
+.login-card label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
+.login-card input {
+  border: 1px solid #d7dbe6; border-radius: var(--radius); padding: 8px 10px; font-size: 14px;
+}
+.login-card button[type="submit"] {
+  border: none; background: var(--accent); color: #fff; border-radius: var(--radius);
+  padding: 9px 14px; cursor: pointer; font-size: 14px; margin-top: 6px;
+}
+.login-card button[disabled] { opacity: 0.6; cursor: default; }
+.content { flex: 1; padding: 24px 32px; min-width: 0; }
+.breadcrumbs { color: var(--muted); font-size: 13px; margin-bottom: 16px; }
+.card {
+  background: var(--surface); border-radius: var(--radius); box-shadow: var(--shadow);
+  padding: 16px 20px;
+}
+.confirm-btn {
+  border: 1px solid var(--accent); background: var(--surface); color: var(--accent);
+  border-radius: var(--radius); padding: 6px 14px; cursor: pointer;
+}
+.confirm-btn.armed { background: var(--warn); border-color: var(--warn); color: #fff; }
+.link-btn {
+  border: none; background: none; color: var(--accent); cursor: pointer; padding: 0;
+  font-size: inherit; text-decoration: underline;
+}
+.freshness { color: var(--muted); font-size: 13px; }
+.freshness button {
+  border: none; background: none; color: var(--accent); cursor: pointer; padding: 0;
+}
+
+/* Stage-2 masters/inventory screens */
+.page-header {
+  display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;
+}
+.page-header h1 { margin: 0; font-size: 20px; }
+
+.tab-bar { display: flex; gap: 4px; border-bottom: 1px solid #e3e6ee; margin-bottom: 16px; }
+.tab {
+  border: none; background: none; padding: 8px 14px; cursor: pointer; color: var(--muted);
+  border-bottom: 2px solid transparent; font-size: 14px;
+}
+.tab.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+
+.tab-panel { padding-top: 4px; }
+
+.inline-error {
+  color: var(--bad); background: rgba(176, 74, 74, 0.08); border-radius: var(--radius);
+  padding: 8px 12px; margin: 8px 0; font-size: 13px;
+}
+.inline-error ul { margin: 4px 0 0; padding-left: 18px; }
+
+.banner-warn {
+  color: var(--warn); background: rgba(168, 131, 59, 0.1); border-radius: var(--radius);
+  padding: 8px 12px; margin: 8px 0; font-size: 13px; font-weight: 600;
+}
+
+.hint { color: var(--muted); font-size: 13px; }
+
+.admin-table {
+  width: 100%; border-collapse: collapse; margin: 8px 0; font-size: 14px;
+}
+.admin-table th, .admin-table td {
+  text-align: left; padding: 6px 10px; border-bottom: 1px solid #edeff5;
+}
+.admin-table input, .admin-table select { font-size: 13px; }
+
+.nested-table { margin: 0; font-size: 13px; }
+
+.admin-add-row {
+  display: flex; gap: 8px; align-items: center; margin-top: 10px; flex-wrap: wrap;
+}
+
+.checkbox-label { display: inline-flex; align-items: center; gap: 4px; margin-right: 16px; font-size: 14px; }
+
+.upload-row { display: flex; gap: 12px; align-items: center; margin: 12px 0; flex-wrap: wrap; }
+
+fieldset { border: 1px solid #e3e6ee; border-radius: var(--radius); margin: 10px 0; padding: 10px 14px; }
+legend { color: var(--muted); font-size: 13px; padding: 0 4px; }
+
+/* Verdict chips (裁定C-1) — red (--bad) is reserved for Unrecoverable only;
+   Uncovered and Unrecoverable are never merged into one color. */
+.verdict-chip {
+  display: inline-block; border-radius: 999px; padding: 2px 10px; font-size: 12px;
+  font-weight: 600; white-space: nowrap; border: 1px solid transparent;
+}
+.verdict-covered { background: var(--ok); color: #fff; }
+.verdict-covered-sub { background: transparent; color: var(--ok); border-color: var(--ok); }
+.verdict-pending { background: rgba(168, 131, 59, 0.15); color: var(--warn); }
+.verdict-uncovered { background: var(--warn); color: #fff; }
+.verdict-unrecoverable { background: var(--bad); color: #fff; }
+.verdict-notevaluated { background: #edeff5; color: var(--unmodelled); }
+
+.blocked-badge {
+  display: inline-block; border-radius: 999px; padding: 2px 10px; font-size: 12px;
+  font-weight: 600; white-space: nowrap;
+}
+.blocked-customer { background: #edeff5; color: var(--muted); }
+.blocked-well-approval { background: rgba(168, 131, 59, 0.15); color: var(--warn); }
+.blocked-oracle-release { background: rgba(168, 131, 59, 0.15); color: var(--warn); }
+
+/* Stage-5 MRP by-item ledger: booked receipts (--info, light blue tint) are
+   never visually merged with recommended receipts (--warn, amber italic) —
+   the two columns must stay distinguishable at a glance. */
+.receipt-booked { background: rgba(74, 109, 156, 0.12); color: var(--info); }
+.receipt-recommended { color: var(--warn); font-style: italic; }
+
+/* Stage-5 Material Order Requirements strip cells. */
+.mor-legend { color: var(--muted); font-size: 13px; margin: 8px 0; }
+.mor-strip { display: flex; gap: 2px; flex-wrap: wrap; margin: 6px 0; }
+.mor-cell {
+  min-width: 3.5rem; padding: 4px 6px; border-radius: 4px; font-size: 12px;
+  text-align: center; position: relative;
+}
+.mor-cell-ok { background: rgba(74, 124, 89, 0.12); color: var(--ok); }
+.mor-cell-deficit { background: rgba(176, 74, 74, 0.12); color: var(--bad); }
+.mor-marker { display: block; font-size: 10px; }
+.mor-marker-deadline { color: var(--text); }
+.mor-marker-runout { color: var(--bad); }
+.mor-marker-safety { color: var(--warn); }
+.badge {
+  display: inline-block; font-size: 11px; padding: 1px 8px; border-radius: 999px;
+  background: #edeff5; color: var(--muted);
+}
+.overdue-chip {
+  display: inline-block; border-radius: 999px; padding: 1px 8px; font-size: 11px;
+  font-weight: 600; background: var(--bad); color: #fff; margin-left: 6px;
+}
+/* Stage-5 fix: a requirement's order_deadline before the visible strip's
+   first month cannot land on any strip cell — rendered here as a strip-
+   header chip instead (amber-strong, distinct from the red runout/overdue
+   requirement-row chip above). */
+.overdue-strip-chip {
+  display: inline-block; border-radius: 999px; padding: 1px 8px; font-size: 11px;
+  font-weight: 700; background: var(--warn); color: #1a1200; margin-left: 8px;
+}
+
+/* Stage-5 Surplus dots — ok/warn/bad are never merged into one color. */
+.surplus-dot {
+  display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px;
+}
+.surplus-dot-ok { background: var(--ok); }
+.surplus-dot-warn { background: var(--warn); }
+.surplus-dot-bad { background: var(--bad); }
+
+.exec-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; margin-top: 16px; }
+.exec-block h2 { margin-top: 0; font-size: 16px; }
+.mt-headline { font-size: 28px; font-weight: 700; }
+
+.scope-checks { display: flex; gap: 12px; flex-wrap: wrap; margin: 8px 0; }
+
+.timeline { overflow-x: auto; margin: 12px 0; }
+.timeline-grid { display: flex; gap: 8px; min-width: max-content; }
+.timeline-month {
+  width: 140px; flex: none; border: 1px dashed #d3d8e5; border-radius: var(--radius);
+  padding: 6px; min-height: 120px;
+}
+.timeline-month-header { font-size: 12px; color: var(--muted); margin-bottom: 6px; text-align: center; }
+.timeline-chip {
+  background: var(--surface); border: 1px solid var(--accent); border-radius: 999px;
+  padding: 2px 8px; font-size: 12px; margin: 2px 0; cursor: grab; display: block;
+}
+.timeline-month-dragover { background: rgba(109, 127, 201, 0.08); }
+
+.scenario-chip {
+  display: inline-block; border-radius: 999px; padding: 2px 10px; font-size: 12px;
+  font-weight: 600; white-space: nowrap;
+}
+.scenario-draft { background: #edeff5; color: var(--muted); }
+.scenario-applied { background: var(--ok); color: #fff; }
+
+.preview-panel pre {
+  background: #f2f3f8; border-radius: var(--radius); padding: 10px; font-size: 12px; overflow-x: auto;
+}
+.preview-row-changed { background: rgba(168, 131, 59, 0.06); }
+.preview-delta { color: var(--warn); font-weight: 600; }
+
+.banner-error {
+  color: #fff; background: var(--bad); border-radius: var(--radius);
+  padding: 8px 12px; margin: 8px 0; font-size: 13px; font-weight: 600;
+}
+
+/* Explicit horizontal-scroll wrapper for grids that must never collapse
+   into stacked cards on mobile: Coverage, MRP Summary/By Item, Order
+   Requirements (MOR). Desktop: no-op (content already fits or scrolls). */
+.table-scroll { overflow-x: auto; }
+
+/* Mobile top bar / hamburger toggle for the rail — hidden above 640px. */
+.rail-toggle {
+  display: none;
+  width: 100%; align-items: center; justify-content: space-between;
+  background: var(--rail-bg); color: #fff; border: none; padding: 12px 16px;
+  font-size: 15px; font-weight: 600; cursor: pointer;
+}
+.rail-toggle-icon { font-size: 18px; line-height: 1; }
+
+/* Mobile layout (spec §5 方式A): the rail collapses to a top bar; tapping
+   the hamburger reveals the nav as a dropdown panel. Coverage/MRP/MOR
+   tables keep horizontal scroll via .table-scroll above and are excluded
+   from card-ization. */
+@media (max-width: 640px) {
+  .layout { flex-direction: column; }
+  .rail-toggle { display: flex; }
+  .rail {
+    width: 100%; min-height: auto; padding: 0; display: none;
+  }
+  .rail.rail-open { display: flex; }
+  .rail .rail-title { display: none; }
+  .content { padding: 16px; }
+
+  /* Card-ize plain list/detail tables (Home, Demand, Admin, Approvals, etc).
+     Higher-specificity ".table-scroll .admin-table" rules further below
+     restore normal table layout for Coverage/MRP/MOR grids, which must
+     keep horizontal scroll instead of collapsing into cards. */
+  .admin-table { display: block; }
+  .admin-table thead { display: none; }
+  .admin-table tbody, .admin-table tr { display: block; width: 100%; }
+  .admin-table tr {
+    border: 1px solid #edeff5; border-radius: var(--radius); margin-bottom: 10px;
+    padding: 6px 10px; background: var(--surface);
+  }
+  .admin-table td {
+    display: flex; justify-content: space-between; gap: 12px;
+    border-bottom: 1px solid #f2f3f8; padding: 6px 0; text-align: right;
+  }
+  .admin-table td:last-child { border-bottom: none; }
+
+  .table-scroll .admin-table { display: table; min-width: 480px; }
+  .table-scroll .admin-table thead { display: table-header-group; }
+  .table-scroll .admin-table tbody, .table-scroll .admin-table tr { display: table-row; width: auto; }
+  .table-scroll .admin-table tr { border: none; border-radius: 0; margin-bottom: 0; padding: 0; background: transparent; }
+  .table-scroll .admin-table td {
+    display: table-cell; text-align: left; border-bottom: 1px solid #edeff5; padding: 6px 10px;
+  }
+
+  .exec-grid { grid-template-columns: 1fr; }
+}

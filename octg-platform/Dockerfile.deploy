@@ -1,0 +1,18 @@
+# Build the SPA, then serve it and the API from one FastAPI container.
+FROM node:20-slim AS frontend
+WORKDIR /fe
+COPY octg-platform/frontend/package.json octg-platform/frontend/package-lock.json ./
+RUN npm ci
+COPY octg-platform/frontend/ ./
+ENV VITE_API_BASE=""
+RUN npm run build
+
+FROM python:3.11-slim
+WORKDIR /app
+COPY octg-platform/backend/requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+COPY octg-platform/backend/ ./
+COPY --from=frontend /fe/dist ./spa
+ENV SPA_DIST=/app/spa
+EXPOSE 8000
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]

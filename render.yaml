@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: octg-rebuild-uat
+    runtime: docker
+    plan: free
+    branch: main
+    dockerfilePath: octg-platform/Dockerfile.deploy
+    dockerContext: .
+    envVars:
+      - key: AUTH_SECRET
+        generateValue: true

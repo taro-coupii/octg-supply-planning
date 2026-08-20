@@ -1,0 +1,369 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>OCTG Supply Readiness Platform — User Manual</title>
+<style>
+  :root {
+    --rail-bg: #1c2536;
+    --bg: #f7f8fb;
+    --surface: #ffffff;
+    --text: #26303f;
+    --muted: #6b7688;
+    --accent: #6d7fc9;
+    --ok: #4a7c59;
+    --warn: #a8833b;
+    --bad: #b04a4a;
+    --unmodelled: #7a7a7d;
+    --info: #4a6d9c;
+    --radius: 10px;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: -apple-system, "Segoe UI", Roboto, "Hiragino Sans", sans-serif;
+    line-height: 1.5;
+  }
+  header.top {
+    background: var(--rail-bg); color: #fff; padding: 24px 32px;
+  }
+  header.top h1 { margin: 0 0 4px; font-size: 24px; }
+  header.top p { margin: 0; color: #c9d2e3; font-size: 14px; }
+  main { max-width: 900px; margin: 0 auto; padding: 24px 24px 80px; }
+  nav.toc {
+    background: var(--surface); border-radius: var(--radius); padding: 16px 20px;
+    box-shadow: 0 1px 3px rgba(28,37,54,0.08); margin-bottom: 24px;
+  }
+  nav.toc h2 { margin-top: 0; font-size: 16px; }
+  nav.toc ol { columns: 2; column-gap: 24px; padding-left: 20px; font-size: 14px; }
+  nav.toc li { break-inside: avoid; margin-bottom: 4px; }
+  section {
+    background: var(--surface); border-radius: var(--radius); padding: 20px 24px;
+    box-shadow: 0 1px 3px rgba(28,37,54,0.08); margin-bottom: 20px;
+  }
+  section h2 { margin-top: 0; font-size: 19px; border-bottom: 1px solid #e3e6ee; padding-bottom: 8px; }
+  section h3 { font-size: 15px; color: var(--accent); margin-bottom: 4px; }
+  .en { }
+  .ja { color: var(--muted); font-size: 13px; }
+  code { background: #f2f3f8; border-radius: 4px; padding: 1px 5px; font-size: 13px; }
+  table { border-collapse: collapse; width: 100%; margin: 10px 0; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid #edeff5; vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; }
+  .chip {
+    display: inline-block; border-radius: 999px; padding: 2px 10px; font-size: 12px;
+    font-weight: 600; color: #fff; margin-right: 4px;
+  }
+  .chip-ok { background: var(--ok); }
+  .chip-warn { background: var(--warn); }
+  .chip-bad { background: var(--bad); }
+  .chip-info { background: var(--info); }
+  .chip-muted { background: var(--unmodelled); }
+  .note {
+    background: rgba(168,131,59,0.1); color: var(--warn); border-radius: var(--radius);
+    padding: 10px 14px; font-size: 13px; font-weight: 600; margin: 10px 0;
+  }
+  .caution {
+    background: rgba(176,74,74,0.08); color: var(--bad); border-radius: var(--radius);
+    padding: 10px 14px; font-size: 13px; margin: 10px 0;
+  }
+  .cred {
+    background: #f2f3f8; border-radius: var(--radius); padding: 10px 14px; font-size: 13px; margin: 10px 0;
+  }
+  a { color: var(--accent); }
+  footer { text-align: center; color: var(--muted); font-size: 12px; padding: 20px; }
+</style>
+</head>
+<body>
+<header class="top">
+  <h1>OCTG Supply Readiness Platform — User Manual</h1>
+  <p>ユーザーマニュアル / 操作ガイド — text-only reference (no screenshots; see “How to read this manual” below)</p>
+</header>
+<main>
+
+<nav class="toc">
+  <h2>Contents / 目次</h2>
+  <ol>
+    <li><a href="#reading">How to read this manual / 本マニュアルの読み方</a></li>
+    <li><a href="#login">Login / ログイン</a></li>
+    <li><a href="#home">Home / ホーム</a></li>
+    <li><a href="#demand-import">Demand Import / 需要インポート</a></li>
+    <li><a href="#demand-list">Demand List / 需要一覧</a></li>
+    <li><a href="#well">Well Workspace / 井戸ワークスペース</a></li>
+    <li><a href="#coverage">Coverage Workspace / カバレッジ</a></li>
+    <li><a href="#substitution">Substitution Workspace / 代替品</a></li>
+    <li><a href="#approvals">Approval Queue / 承認キュー</a></li>
+    <li><a href="#sharing">Sharing Analysis / シェアリング分析</a></li>
+    <li><a href="#mrp-summary">MRP Summary / MRPサマリー</a></li>
+    <li><a href="#mrp-by-item">MRP By Item / 品目別MRP</a></li>
+    <li><a href="#mor">Order Requirements (MOR) / 発注要求</a></li>
+    <li><a href="#surplus">Surplus / 余剰在庫</a></li>
+    <li><a href="#executive">Executive Dashboard / 経営ダッシュボード</a></li>
+    <li><a href="#scenarios">Scenarios / シナリオ</a></li>
+    <li><a href="#catalog">Product Catalog / 製品カタログ</a></li>
+    <li><a href="#company-inventory">Company Inventory / 自社在庫</a></li>
+    <li><a href="#customer-owned">Customer-Owned Inventory / 顧客所有在庫</a></li>
+    <li><a href="#admin">Administration / 管理</a></li>
+    <li><a href="#flow">Screen-flow table / 画面遷移表</a></li>
+  </ol>
+</nav>
+
+<section id="reading">
+<h2>How to read this manual / 本マニュアルの読み方</h2>
+<p class="en">This manual has no screenshots. The real UAT environment could not be captured for images at the time of writing, so each screen is described in text — purpose, key actions, and cautions — plus a screen-flow table at the end showing how screens link to one another. This is a recorded, deliberate difference from the original plan; see COMPROMISES.md entry F-1.</p>
+<p class="ja">本マニュアルはスクリーンショットを含みません。執筆時点で実UAT環境から画像取得ができなかったため、各画面はテキスト（目的・主要操作・注意）で説明し、末尾に画面遷移表を付けています。裁定F-1として妥協レジスタに記録済みです。</p>
+
+<h3>The 5 verdict colors / 判定5色</h3>
+<p class="en">Every demand line that has been evaluated for coverage gets one verdict. The five verdicts and their colors are fixed and never merged:</p>
+<table>
+<tr><th>Verdict</th><th>Color</th><th>Meaning</th></tr>
+<tr><td><span class="chip chip-ok">Covered</span></td><td>Green</td><td>Directly covered by matching stock/plan.</td></tr>
+<tr><td><span class="chip" style="background:#fff;color:var(--ok);border:1px solid var(--ok)">Covered (via substitute)</span></td><td>Green outline</td><td>Covered only because an approved substitute product is used.</td></tr>
+<tr><td><span class="chip" style="background:rgba(168,131,59,0.15);color:var(--warn)">Pending</span></td><td>Amber (light)</td><td>Awaiting a substitution approval decision.</td></tr>
+<tr><td><span class="chip chip-warn">Uncovered</span></td><td>Amber (solid)</td><td>Not covered today, but recoverable with action (e.g. an order).</td></tr>
+<tr><td><span class="chip chip-bad">Unrecoverable</span></td><td><strong>Red</strong></td><td>Cannot be covered in time by any known means. <strong>Red is reserved exclusively for Unrecoverable</strong> — no other state ever uses red.</td></tr>
+</table>
+<p class="en">A sixth grey state, <strong>Not evaluated</strong>, appears on lines the engine has not yet scored; it is excluded from the coverage-rate denominator (see Home).</p>
+<p class="ja">評価済みの需要明細には必ず1つの判定が付きます。5色は固定で混同されません。赤は Unrecoverable 専用です。未評価（灰色）はカバレッジ率の分母から除外されます。</p>
+
+<h3>Overdue / 期限超過</h3>
+<p class="en">A requirement or receipt is <strong>overdue</strong> when its Required-on-Site (ROS) month is earlier than the current calendar month. Overdue rows carry a red <code>overdue-chip</code> badge distinct from the Unrecoverable verdict chip.</p>
+<p class="ja">要求/入荷の必要着地月（ROS）が現在の暦月より前の場合「overdue」です。赤い overdue-chip バッジで表示されます（Unrecoverable の判定チップとは別物）。</p>
+
+<h3>“Unknown” is not zero / unknown ≠ 0</h3>
+<p class="en">Where a quantity, date, or count shows <code>—</code> or “unknown”, it means the platform has no data — it is <em>not</em> the same as a value of zero. Do not treat a dash as “nothing needed”; treat it as “not yet known” and investigate the source (e.g. missing weight_kg, missing coverage evaluation).</p>
+<p class="ja">数量・日付・件数が「—」や unknown と表示される場合、データが存在しないことを意味し、ゼロとは異なります。「何も必要ない」ではなく「まだ分からない」として扱い、原因（weight_kg 未設定、未評価など）を確認してください。</p>
+
+<h3>Known limitations / 既知の制限</h3>
+<div class="caution">
+<strong>C-03R</strong> — Company inventory rows fed from the Oracle source system (<code>source_system == "oracle"</code>) cannot be manually edited or deleted from the Company Inventory screen; such attempts are rejected (HTTP 409). Manual add/edit/delete only applies to non-Oracle rows, until a live Oracle feed replaces this manual workflow.<br/>
+自社在庫（Company Inventory）の Oracle 由来行は手動編集・削除不可（409で拒否）。手動メンテはOracle以外の行のみです。
+</div>
+<div class="caution">
+<strong>C-15R</strong> — The Administration screens are gated by login but not by an admin-only role check at this stage; any signed-in user who navigates to <code>/admin</code> can reach them. Do not rely on the UI alone to keep non-admin users out — this is a recorded, temporary gap (role-gating is planned for a later phase).<br/>
+管理画面（Administration）はログイン必須ですが、現段階では管理者ロールの強制チェックが未適用です。ログイン済みの利用者であれば <code>/admin</code> に到達できます。将来フェーズでロールゲートを導入予定の既知の制限です。
+</div>
+</section>
+
+<section id="login">
+<h2>Login / ログイン</h2>
+<div class="note">Note: this UAT environment uses shared demo credentials and resets to demo state on each redeploy.</div>
+<h3>Purpose</h3>
+<p class="en">Authenticate to receive a token used by all subsequent API calls. There is no self-service signup; accounts are provisioned by the platform (seed data in dev/UAT).</p>
+<h3>Key actions</h3>
+<p class="en">Enter email and password, submit. On success you land on Home. Use the rail's “Sign out” to clear your session client-side (there is no server session to invalidate).</p>
+<div class="cred">
+<strong>Dev / UAT credentials (seed data only — never use in production):</strong><br/>
+Admin: <code>admin@octg.dev</code> / <code>octg-dev</code><br/>
+Planner (SCEU Norway BU): <code>planner@octg.dev</code> / <code>octg-dev</code>
+</div>
+<h3>Cautions</h3>
+<p class="en">A wrong password shows an inline error and keeps the form filled in. The token is stored in the browser only (localStorage) — closing all tabs does not end the session automatically.</p>
+</section>
+
+<section id="home">
+<h2>Home / ホーム</h2>
+<h3>Purpose</h3>
+<p class="en">Landing dashboard after login. Summarizes customers, wells, coverage rate, pending approvals, recent demand changes, and wells needing attention.</p>
+<h3>Key actions</h3>
+<p class="en">Click a well name to open its Well Workspace. Click “See all” links to jump to Demand or Coverage. Refresh the freshness indicator to re-pull KPI data.</p>
+<h3>Cautions</h3>
+<p class="en">Coverage rate excludes not-yet-evaluated lines from its denominator; the not-evaluated count is shown alongside so it is never silently hidden. The pending-approvals card is a union of two sources (substitution approval requests and verdicts that are themselves “Pending”) — each row is labeled with its source.</p>
+</section>
+
+<section id="demand-import">
+<h2>Demand Import / 需要インポート</h2>
+<h3>Purpose</h3>
+<p class="en">Upload a spreadsheet of demand lines for a well/customer, preview validation results, then apply or discard the import.</p>
+<h3>Key actions</h3>
+<p class="en">Choose file → upload → review the preview (row-level errors are listed, valid rows are highlighted) → Apply to commit, or Discard to cancel.</p>
+<h3>Cautions</h3>
+<p class="en">Applying an import creates a new DemandRevision — it does not silently overwrite previous data; history remains visible in Demand List. Row errors block only the affected rows unless the whole file fails validation.</p>
+</section>
+
+<section id="demand-list">
+<h2>Demand List / 需要一覧</h2>
+<h3>Purpose</h3>
+<p class="en">Browse demand lines across wells with filters, and see the demand revision history.</p>
+<h3>Key actions</h3>
+<p class="en">Filter by customer/well/product; sort columns; click a line to jump into its Well Workspace context.</p>
+<h3>Cautions</h3>
+<p class="en">Filters are reflected in the URL (shareable/bookmarkable) and are not lost on refresh.</p>
+</section>
+
+<section id="well">
+<h2>Well Workspace / 井戸ワークスペース</h2>
+<h3>Purpose</h3>
+<p class="en">Single-well detail: demand lines, their verdicts, and revision history for that well.</p>
+<h3>Key actions</h3>
+<p class="en">Review each line's verdict chip; follow links into Coverage or Substitution for lines needing action.</p>
+<h3>Cautions</h3>
+<p class="en">A well's status (Planned / Budgeted / Confirmed) affects which demand can still be edited — check the status badge before assuming a line is actionable.</p>
+</section>
+
+<section id="coverage">
+<h2>Coverage Workspace / カバレッジ</h2>
+<h3>Purpose</h3>
+<p class="en">The evaluation engine's output: for every demand line, whether it is covered, and by what (own stock, substitute, or not at all).</p>
+<h3>Key actions</h3>
+<p class="en">Filter by verdict/customer/well; drill into Unrecoverable or Uncovered lines to decide next steps (order, substitute, escalate).</p>
+<h3>Cautions</h3>
+<p class="en">Red is reserved for Unrecoverable only — never assume amber and red mean the same severity. This table keeps horizontal scroll on narrow screens rather than collapsing into cards, so all verdict columns stay visible together.</p>
+</section>
+
+<section id="substitution">
+<h2>Substitution Workspace / 代替品</h2>
+<h3>Purpose</h3>
+<p class="en">Propose and manage substitute products for demand lines that cannot be covered by the exact requested product.</p>
+<h3>Key actions</h3>
+<p class="en">Select a candidate substitute, submit for approval. Approved substitutions turn the line's verdict into “Covered (via substitute)”.</p>
+<h3>Cautions</h3>
+<p class="en">A submitted substitution is not applied until approved in Approval Queue — the demand line stays in its prior verdict (often Pending) until then.</p>
+</section>
+
+<section id="approvals">
+<h2>Approval Queue / 承認キュー</h2>
+<h3>Purpose</h3>
+<p class="en">Decide (approve/reject) pending substitution requests.</p>
+<h3>Key actions</h3>
+<p class="en">Review the proposed substitute against the original product spec, then Approve or Reject with a confirm step (destructive-feeling actions require a second click to arm).</p>
+<h3>Cautions</h3>
+<p class="en">Rejecting does not delete the underlying demand line — it returns the line to its prior verdict so it can be re-evaluated or resubmitted.</p>
+</section>
+
+<section id="sharing">
+<h2>Sharing Analysis / シェアリング分析</h2>
+<h3>Purpose</h3>
+<p class="en">Shows how a shared/pooled inventory position is allocated across multiple wells or customers.</p>
+<h3>Key actions</h3>
+<p class="en">Review allocation splits; identify wells whose share depends on a contested or scarce item.</p>
+<h3>Cautions</h3>
+<p class="en">Allocation numbers reflect the current evaluation snapshot — re-run/refresh after any demand or inventory change before relying on the split.</p>
+</section>
+
+<section id="mrp-summary">
+<h2>MRP Summary / MRPサマリー</h2>
+<h3>Purpose</h3>
+<p class="en">Aggregate material-requirements-planning view across products/time buckets.</p>
+<h3>Key actions</h3>
+<p class="en">Scan for deficits by product/month; drill into MRP By Item for detail.</p>
+<h3>Cautions</h3>
+<p class="en">This table keeps horizontal scroll on narrow screens (never collapses to cards) so month columns stay aligned.</p>
+</section>
+
+<section id="mrp-by-item">
+<h2>MRP By Item / 品目別MRP</h2>
+<h3>Purpose</h3>
+<p class="en">Per-item ledger of booked vs. recommended receipts against requirements over time.</p>
+<h3>Key actions</h3>
+<p class="en">Distinguish <span class="chip chip-info">booked receipts</span> (blue) from <em>recommended receipts</em> (amber italic) — booked means an order already exists; recommended is the engine's suggestion, not yet ordered.</p>
+<h3>Cautions</h3>
+<p class="en">Never read a recommended receipt as if material is already on order. This table keeps horizontal scroll and does not collapse into cards.</p>
+</section>
+
+<section id="mor">
+<h2>Order Requirements (MOR) / 発注要求</h2>
+<h3>Purpose</h3>
+<p class="en">Material Order Requirements: a strip view per product showing monthly ok/deficit cells with deadline, runout, and safety-stock markers.</p>
+<h3>Key actions</h3>
+<p class="en">Read the strip left-to-right by month; a deficit cell is highlighted red-tinted. An order-deadline that falls before the first visible strip month is shown as a header chip rather than a cell.</p>
+<h3>Cautions</h3>
+<p class="en">The <code>overdue-chip</code> (red, row-level) and the <code>overdue-strip-chip</code> (amber, header-level) are visually distinct on purpose — do not conflate them. This table keeps horizontal scroll and does not collapse into cards.</p>
+</section>
+
+<section id="surplus">
+<h2>Surplus / 余剰在庫</h2>
+<h3>Purpose</h3>
+<p class="en">Identify inventory positions that exceed near-term demand (candidates for redeployment or de-risking).</p>
+<h3>Key actions</h3>
+<p class="en">Review surplus-dot severity (ok/warn/bad, never merged) per item; consider proposing a substitution/transfer elsewhere.</p>
+<h3>Cautions</h3>
+<p class="en">A surplus figure is a snapshot; it does not account for demand not yet imported into the system.</p>
+</section>
+
+<section id="executive">
+<h2>Executive Dashboard / 経営ダッシュボード</h2>
+<h3>Purpose</h3>
+<p class="en">High-level, cross-cutting metrics for leadership: coverage health, MT (metric-tonnage) headline figures, scope checks.</p>
+<h3>Key actions</h3>
+<p class="en">Use as a starting point before drilling into Coverage, MRP, or Surplus for root cause.</p>
+<h3>Cautions</h3>
+<p class="en">MT headline figures depend on <code>Product.weight_kg</code> being populated; products missing this field are excluded from MT totals (a recorded compromise — see COMPROMISES.md C-06R).</p>
+</section>
+
+<section id="scenarios">
+<h2>Scenarios / シナリオ</h2>
+<h3>Purpose</h3>
+<p class="en">Draft what-if overrides (e.g. hypothetical demand or inventory changes) and preview their effect before applying them to live data.</p>
+<h3>Key actions</h3>
+<p class="en">Create a scenario, add overrides, preview the delta (changed rows are highlighted), then Apply (draft → applied) when satisfied, or discard.</p>
+<h3>Cautions</h3>
+<p class="en">An applied scenario is not reversible from the UI — review the preview carefully first. Draft scenarios never affect other users' live views.</p>
+</section>
+
+<section id="catalog">
+<h2>Product Catalog / 製品カタログ</h2>
+<h3>Purpose</h3>
+<p class="en">Browse the master product list (specs, substitution groups, weight_kg where known).</p>
+<h3>Key actions</h3>
+<p class="en">Search/filter by spec fields; use this to confirm a substitute candidate's compatibility before proposing it in Substitution Workspace.</p>
+<h3>Cautions</h3>
+<p class="en">Products with a blank weight_kg cannot contribute to MT-based figures elsewhere in the platform.</p>
+</section>
+
+<section id="company-inventory">
+<h2>Company Inventory / 自社在庫</h2>
+<h3>Purpose</h3>
+<p class="en">On-hand company-owned stock by product/location.</p>
+<h3>Key actions</h3>
+<p class="en">Add/edit/delete manual rows (non-Oracle only). Oracle-sourced rows are read-only here.</p>
+<h3>Cautions</h3>
+<p class="en"><strong>C-03R</strong>: attempting to edit or delete an Oracle-sourced row returns an error (409) — this is expected, not a bug, until a live Oracle feed replaces manual entry.</p>
+</section>
+
+<section id="customer-owned">
+<h2>Customer-Owned Inventory / 顧客所有在庫</h2>
+<h3>Purpose</h3>
+<p class="en">Track inventory owned by a customer but staged/available for a well (uploaded per customer via spreadsheet).</p>
+<h3>Key actions</h3>
+<p class="en">Select a customer, upload a position file; review row-level upload errors before they affect coverage evaluation.</p>
+<h3>Cautions</h3>
+<p class="en">No customer selected means no data shown — this is a normal empty state, not an error.</p>
+</section>
+
+<section id="admin">
+<h2>Administration / 管理</h2>
+<h3>Purpose</h3>
+<p class="en">Manage master data: business units, customers, products, users, and related reference tables.</p>
+<h3>Key actions</h3>
+<p class="en">Add/edit reference rows via the admin tables; changes take effect immediately across the platform.</p>
+<h3>Cautions</h3>
+<p class="en"><strong>C-15R</strong>: reachable by any signed-in user, not just admins, at this stage (see “Known limitations” above). Be careful who you share credentials with in the interim.</p>
+</section>
+
+<section id="flow">
+<h2>Screen-flow table / 画面遷移表</h2>
+<p class="en">In lieu of screenshots, this table shows the primary links between screens (business-flow order).</p>
+<table>
+<tr><th>From</th><th>To (via)</th></tr>
+<tr><td>Login</td><td>Home (on successful auth)</td></tr>
+<tr><td>Home</td><td>Well Workspace (well name link) · Demand List (“See all”) · Coverage (“See all”) · Approvals/Substitution (pending row link)</td></tr>
+<tr><td>Demand Import</td><td>Demand List (after Apply)</td></tr>
+<tr><td>Demand List</td><td>Well Workspace (line link)</td></tr>
+<tr><td>Well Workspace</td><td>Coverage · Substitution (per-line action links)</td></tr>
+<tr><td>Coverage</td><td>Substitution (Uncovered/Unrecoverable line) · Well Workspace</td></tr>
+<tr><td>Substitution</td><td>Approval Queue (after submit)</td></tr>
+<tr><td>Approval Queue</td><td>Coverage/Well Workspace (verdict updates after decision)</td></tr>
+<tr><td>MRP Summary</td><td>MRP By Item (drill-down) · Order Requirements</td></tr>
+<tr><td>Executive Dashboard</td><td>use alongside Coverage / MRP Summary / Surplus (no direct links)</td></tr>
+<tr><td>Scenarios (list)</td><td>Scenario Editor (open/create)</td></tr>
+<tr><td>Product Catalog</td><td>Substitution Workspace (compatibility check)</td></tr>
+<tr><td>Administration</td><td>reference data used across all screens (customers, products, business units)</td></tr>
+<tr><td>Any authenticated screen</td><td>Sign out (rail) → Login</td></tr>
+</table>
+</section>
+
+</main>
+<footer>OCTG Supply Readiness Platform — internal user manual. No screenshots (ruling F-1). This page is publicly reachable without login by design.</footer>
+</body>
+</html>
