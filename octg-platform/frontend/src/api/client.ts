@@ -156,6 +156,7 @@ export interface ProductOut {
 export interface SubstitutionCandidate {
   demand_line_id: string;
   from_product_id: string;
+  from_product_description: string | null;
   to_product_id: string;
   product: ProductOut;
   customer_allowed: boolean;

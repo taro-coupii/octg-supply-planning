@@ -369,3 +369,47 @@ def test_recompute_isolates_a_customer_it_cannot_evaluate_and_names_it(
     assert body["skipped_customers"][0]["customer_id"] == "cust-stranded"
     assert body["skipped_customers"][0]["reason"]
     assert "isolation, not partial success" in body["note"]
+
+
+def test_a_substitution_candidate_names_the_product_it_replaces(client, db_session):
+    """No UUID reaches the planner on the substitution screen.
+
+    The engine's candidate carries a full Product for the `to` side only, so the
+    screen used to render the first eight characters of the from-product's id.
+    An id is not a name: it cannot be checked against a pipe tally, and this
+    platform's own rule is that a human is never shown one. The description is a
+    property of the LINE, so the API stamps it on every candidate.
+    """
+    from app.models import DemandLine, Product, TechnicalSubstitution
+
+    _world(db_session)
+    substitute = Product(
+        id="p-sub",
+        description="9-5/8 53.5 SM110XS VAM TOP",
+        type="CSG",
+        size="9-5/8",
+        weight=53.5,
+        grade="SM110XS",
+        grade_type="Carbon",
+        connection="VAM TOP",
+        unit_of_measure=UnitOfMeasure.MTR,
+    )
+    db_session.add(substitute)
+    db_session.add(
+        TechnicalSubstitution(from_product_id="p-main", to_product_id=substitute.id)
+    )
+    db_session.add(
+        InventoryOnHand(
+            business_unit_id="bu-home", product_id=substitute.id, quantity=9000.0
+        )
+    )
+    db_session.commit()
+
+    line = db_session.get(DemandLine, "line-1")
+    res = client.get(f"/demand-lines/{line.id}/substitution-candidates")
+    assert res.status_code == 200, res.text
+    rows = res.json()
+    assert rows, "the fixture must offer a candidate for this to mean anything"
+    for row in rows:
+        assert row["from_product_description"] == "9-5/8 53.5 P110 VAM TOP"
+        assert row["from_product_id"] not in (row["from_product_description"] or "")
