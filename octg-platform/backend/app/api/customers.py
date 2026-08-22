@@ -2,6 +2,8 @@
 
     GET    /business-units      list them
     POST   /business-units      create one
+    PATCH  /business-units/{id} rename one
+    DELETE /business-units/{id} delete one, only while nothing points at it
     GET    /customers           list them, with the policy their coverage is judged under
     GET    /customers/{id}      one of them
     PATCH  /customers/{id}      change its Business Unit and/or its allocation policy
@@ -75,11 +77,21 @@ from app.engines.customer_admin import (
     apply_customer_config_change,
     parse_allocation_policy,
 )
-from app.models import BusinessUnit, Customer
+from app.models import (
+    BusinessUnit,
+    CompanyInventoryUpload,
+    Customer,
+    InventoryOnHand,
+    InventoryOnOrder,
+    ScenarioOverride,
+    User,
+)
 from app.schemas import (
     BusinessUnitCreatedOut,
+    BusinessUnitDeleteBlockedOut,
     BusinessUnitIn,
     BusinessUnitOut,
+    BusinessUnitPatch,
     CustomerConfigChangeOut,
     CustomerConfigPatch,
     CustomerOut,
@@ -204,6 +216,173 @@ def create_business_unit(payload: BusinessUnitIn, db: Session = Depends(get_db))
             "remap."
         ),
     )
+
+
+def _blockers(db: Session, bu_id: str) -> dict[str, int]:
+    """Count everything that still resolves through this Business Unit.
+
+    Every one of these carries a `business_unit_id`. A BU is the ABSOLUTE inventory
+    boundary, so a row left pointing at a deleted one is not a cosmetic dangling
+    reference -- it is a customer whose pool cannot be resolved, and
+    `recompute_customer` answers that with a refusal rather than a verdict. The count
+    is taken for all six even once one is non-zero, because the operator's next
+    question is "what do I have to move", not "what did you notice first".
+    """
+    return {
+        "customer_count": db.query(Customer).filter_by(business_unit_id=bu_id).count(),
+        "inventory_on_hand_row_count": db.query(InventoryOnHand)
+        .filter_by(business_unit_id=bu_id)
+        .count(),
+        "inventory_on_order_row_count": db.query(InventoryOnOrder)
+        .filter_by(business_unit_id=bu_id)
+        .count(),
+        "company_inventory_upload_count": db.query(CompanyInventoryUpload)
+        .filter_by(business_unit_id=bu_id)
+        .count(),
+        "user_count": db.query(User).filter_by(business_unit_id=bu_id).count(),
+        "scenario_override_count": db.query(ScenarioOverride)
+        .filter_by(target_business_unit_id=bu_id)
+        .count(),
+    }
+
+
+@router.patch("/business-units/{business_unit_id}", response_model=BusinessUnitOut)
+def rename_business_unit(
+    business_unit_id: str,
+    payload: BusinessUnitPatch,
+    db: Session = Depends(get_db),
+):
+    """Rename one Business Unit. Nothing else about it is editable.
+
+    NO COVERAGE VERDICT CHANGES and nothing is recomputed. Every pool, assignment and
+    scope resolves through the BU *id*; the name is what screens render. That is the
+    whole reason a rename is safe while `PATCH /customers/{id}`'s remap -- which moves
+    a customer to a different id -- has to recompute and can be refused.
+
+    The two refusals mirror `POST /business-units` exactly, and for the same reason
+    rather than for symmetry's sake: a blank name would make the row unselectable in
+    the picker it exists to appear in, and a duplicate name -- matched
+    case-INSENSITIVELY, stricter than the database's case-sensitive constraint --
+    would put an operator one indistinguishable click away from remapping a customer
+    into the wrong warehouse.
+
+    Renaming a BU to the name it already has is accepted and is a no-op; it is not
+    treated as a duplicate of itself.
+    """
+    unit = db.get(BusinessUnit, business_unit_id)
+    if unit is None:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"no Business Unit with id {business_unit_id!r}. Nothing was saved."
+            ),
+        )
+
+    name = (payload.name or "").strip()
+    if not name:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "name is required and must not be blank. A Business Unit's name is the "
+                "only handle a human has on it -- the id is a uuid, and every screen, "
+                "every coverage provenance label and the customer remap picker render "
+                "the name. A blank one would create a row that cannot be identified in "
+                "the picker it exists to appear in. Nothing was saved."
+            ),
+        )
+
+    clash = (
+        db.query(BusinessUnit)
+        .filter(func.lower(BusinessUnit.name) == name.lower())
+        .filter(BusinessUnit.id != unit.id)
+        .first()
+    )
+    if clash is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"a different Business Unit is already named {clash.name!r} (id "
+                f"{clash.id}). Names are unique and the check is case-insensitive: two "
+                "rows that only a database could tell apart would put an operator one "
+                "indistinguishable click away from remapping a customer into the wrong "
+                "inventory pool -- and a Business Unit is an absolute inventory "
+                "boundary, so that is a different warehouse, not a different label. "
+                "Nothing was saved."
+            ),
+        )
+
+    previous = unit.name
+    unit.name = name
+    try:
+        db.flush()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"a Business Unit named {name!r} already exists -- it was created or "
+                "renamed by another request while this one was in flight. Nothing was "
+                "saved. Re-read GET /business-units."
+            ),
+        ) from exc
+    db.commit()
+
+    _ = previous
+    return BusinessUnitOut(id=unit.id, name=unit.name)
+
+
+@router.delete("/business-units/{business_unit_id}", status_code=204)
+def delete_business_unit(business_unit_id: str, db: Session = Depends(get_db)):
+    """Delete one Business Unit, and ONLY while nothing still points at it.
+
+    The refusal is the feature. A BU is the absolute inventory boundary, so deleting
+    one that still has customers -- or on-hand rows, or a planner pinned to it --
+    does not tidy anything up: it strands every one of those rows against an id that
+    no longer resolves, and the first symptom is a customer whose coverage cannot be
+    computed at all. There is deliberately no cascade and no force flag. Move the
+    customers (`PATCH /customers/{id}`), let the inventory feed retire the rows, then
+    delete the empty shell.
+
+    A 409 carries the itemised counts (`BusinessUnitDeleteBlockedOut`), not just a
+    sentence, so the screen can list what has to move rather than sending the operator
+    hunting for it.
+    """
+    unit = db.get(BusinessUnit, business_unit_id)
+    if unit is None:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"no Business Unit with id {business_unit_id!r}. Nothing was deleted."
+            ),
+        )
+
+    counts = _blockers(db, unit.id)
+    if any(counts.values()):
+        parts = [
+            f"{count} {label.replace('_count', '').replace('_row', ' row').replace('_', ' ')}"
+            for label, count in counts.items()
+            if count
+        ]
+        blocked = BusinessUnitDeleteBlockedOut(
+            business_unit=BusinessUnitOut(id=unit.id, name=unit.name),
+            **counts,
+            note=(
+                f"Business Unit {unit.name!r} still has {', '.join(parts)} pointing at "
+                "it, so it was NOT deleted and nothing was changed. A Business Unit is "
+                "the absolute inventory boundary: every one of those rows resolves "
+                "through this id, and deleting it would strand them -- a customer left "
+                "behind cannot have its coverage computed at all, which surfaces as a "
+                "refusal on every screen rather than as a missing Business Unit. There "
+                "is no cascade and no force: move the customers with PATCH "
+                "/customers/{id}, let the inventory feed retire the rows, then delete "
+                "the empty unit."
+            ),
+        )
+        raise HTTPException(status_code=409, detail=blocked.model_dump())
+
+    db.delete(unit)
+    db.commit()
+    return None
 
 
 @router.get("/customers", response_model=list[CustomerOut])

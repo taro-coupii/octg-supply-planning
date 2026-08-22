@@ -1,7 +1,7 @@
 # OCTG Supply Readiness Platform — Requirements (consolidated, as of 2026-08)
 
 A single-page restatement of the original requirements plus the product-owner rulings made
-during development, grounded in the current implementation (19 screens, 638 tests, deployed
+during development, grounded in the current implementation (19 screens, 650 tests, deployed
 on Render). Implementation handover detail lives in `../HANDOFF.md`; deliberate compromises
 in `../MVP_COMPROMISES.md`.
 
@@ -125,6 +125,15 @@ Cross-cutting rules settled by rulings during development:
 - **Company Inventory** (including an Oracle assignments tab) / **Customer-Owned
   Inventory** (template download + upload; the only platform-writable inventory) /
   **Product Workspace**
+- **Business Unit lifecycle**: a BU can be created, renamed, and deleted — but a delete
+  is refused (409, itemised) while any customer, inventory row, upload, user or scenario
+  override still resolves through it. BUs are flat by design: there is no parent/child
+  hierarchy, because the inventory pool is a flat join and no engine walks a tree
+- **Explicit coverage recompute**: `POST /coverage/recompute` rewrites the stored
+  verdicts for every customer, or one named customer, under the platform default scope.
+  Failures are isolated and committed per customer, so a customer with incomplete
+  inventory facts is named and skipped rather than costing everyone their recompute.
+  It takes no scope filters — the official verdict is the default-scope one
 - **Administration (5 tabs)**: BU hierarchy / lead times / coverage scope defaults /
   substitution master data (technical pairs + customer rules) / safety stock
   (unset null ≠ explicit 0)
@@ -157,17 +166,39 @@ Cross-cutting rules settled by rulings during development:
 
 ## 6. Out of scope / deferred (pre-pilot backlog)
 
-**Must be closed before pilot exposure (deliberately deferred by user ruling):**
-1. Security — apply `require_admin` to the /admin routes; C-12 (remove the AUTH_SECRET dev
+Pilot launch date is undetermined as of 2026-08-20 (grilling session ruling) — the items
+below are not calendar-urgent, but security stays pilot-blocking regardless of date per the
+existing ruling. Next up, ranked 2026-08-20: **(1) Monetary valuation**, with security vs.
+notifications ordering deliberately left open until valuation lands.
+
+1. **Monetary valuation — Price master (in design, ruled 2026-08-20).**
+   - Single currency (no FX conversion)
+   - POC data: sample rows, platform-editable directly (no Excel template/upload flow,
+     unlike Company/Customer-Owned Inventory); Oracle-fed pricing is a future integration
+   - New `Numeric`/`Decimal` money type — the first in the codebase (all other quantity
+     columns are `Float`; money precision needs its own convention)
+   - Obsolete stock valued at a discount to Surplus; applies directly to the existing
+     Obsolete bucket (`app/engines/surplus.py`, OH = Allocated + Surplus + Obsolete, itself
+     computed from the 36-month demand horizon) — **no new age/condition field needed**.
+     Discount rate is undecided pending accounting input; POC proceeds on a placeholder
+     until that's settled
+   - Scope: **Surplus List first.** Executive Dashboard money figures are a separate,
+     later task, not bundled with this one
+   - Admin surface: extends **Product Workspace** (not a new Administration tab)
+2. Security — apply `require_admin` to the /admin routes; C-12 (remove the AUTH_SECRET dev
    fallback); C-13 (object-level authorization and automatic BU filtering on list APIs);
-   C-14 (`?access_token=` download links); login rate limiting
-2. Monetary valuation — Price master plus inventory ageing/condition data; money figures on
-   Surplus/Executive
+   C-14 (`?access_token=` download links); login rate limiting. Must be closed before pilot
+   exposure regardless of pilot date — ordering vs. item 3 below intentionally undecided
 3. Notifications — Teams/mail push (new uncovered wells, pending approvals, approaching
    order deadlines)
+
+**Ruled acceptable for pilot as-is (2026-08-20), no migration needed beforehand:**
+- Render free plan (15-min idle spin-down, `dev.db` reset on every redeploy)
+- Dev email+password auth (Entra ID swap is a post-pilot item, not a pilot blocker)
 
 **Explicitly out of scope:**
 - Writing to Oracle from the platform (creating or releasing hard assignments)
 - Manual coverage overrides
 - Dark mode
-- C-10 (see the compromise register; open by choice)
+- ~~C-10~~ — **ruled 2026-08-20: align cross-customer sharing what-if to the production
+  partial-consumption method** (see the compromise register for implementation)

@@ -57,7 +57,7 @@ review; a table row alone leaves the implementer unable to find the code.
 | C-05 | 🟡 | ⑧ units are not converted | **The introduction of MT conversion at all.** Confined to the Dashboard display layer. If it leaks to other screens, rounding error could flip a coverage verdict. Implementation: `app/engines/units.py`, called only from `executive.py` (on 8/11 extended to `*_tonnes` headlines on every block; the boundary — never outside `app/engines/executive.py` — is unchanged) |
 | C-06 | 🔴 | ① never fabricate numbers | **`Product.weight` is nullable.** MT conversion works for every row today only because all 10 of 10 products (the 8/11 SCEU Norway world) have a weight. Implementation: the NULL branch in `units.py` |
 | C-07 | ✅ | (robustness) | **Closed (2026-08-12).** `coverage_view._recompute_all` isolates failures per customer. A customer with no BU is skipped and named in the response as `skipped_customers` (and in a banner on screen). Regression tests: `test_seed_honesty_paths` / `test_scope_filter_api` |
-| C-08 | 🟡 | ⑥ coverage is written by the engine | **Coverage recomputation depends on an explicit trigger.** There is no background job, so a stored verdict stays stale until a trigger arrives. **8/12: `computed_at` is now shown on the coverage grid, so staleness is visible** — what remains is the job itself |
+| C-08 | 🟡 | ⑥ coverage is written by the engine | **Coverage recomputation has no automatic trigger.** There is no background job, so a stored verdict stays stale until something happens to it. **8/12: `computed_at` is shown on the grid, so staleness is visible. 8/22: `POST /coverage/recompute` added (all customers or one, committed and isolated per customer) — staleness is now fixable** — what remains is the automatic job |
 | C-09 | ✅ | ③ Customer is a default boundary | **Closed (2026-08-12).** Product-owner ruling: the own-product path deducts another customer's hard assignment exactly as the substitute path does. Investigation found the code already did so (`reserved_elsewhere` in `coverage.py`); only the register was out of date. Regression test: `test_allocation_policies.py::test_soft_is_constrained_by_another_customers_hard_assignment` and the rest of that set |
 | C-10 | ⚪ | — | **Cross-customer sharing analysis is all-or-nothing.** It does not match production's partial-consumption method |
 | C-11 | ✅ | (process) | **Closed (2026-08-10).** git initialised and pushed to GitHub: branch `octg-supply-planning-platform` of `taro-coupii/Claude-Private` |
@@ -152,11 +152,12 @@ review; a table row alone leaves the implementer unable to find the code.
 - **Fix**: `_recompute_all` in `app/engines/coverage_view.py` catches `InventoryScopeMissing` per customer. Skipped customers propagate by name through `CoverageProjection.skipped_customers` → API → an on-screen banner (they never disappear silently)
 - **Regression tests**: `tests/test_seed_honesty_paths.py` (the old 409 pin updated to 200 + skipped), `tests/test_scope_filter_api.py::test_unmapped_customer_no_longer_breaks_the_grid`
 
-### C-08 🟡 Coverage recomputation depends on an explicit trigger
+### C-08 🟡 Coverage recomputation has no automatic trigger
 
 - **What it is**: stored verdicts such as `CoverageResult` stay stale until a recompute trigger fires (revision applied, approval, well status change, inventory update)
 - **Recorded harm**: "the engine code is fixed but `dev.db` is stale" happened repeatedly (`HANDOFF.md` §7)
-- **In the real implementation**: recompute on feed update, or display an explicit "last computed at". **The biggest problem was that the screen never said when the verdict was computed**
+- **8/22 progress**: `POST /coverage/recompute` (`app/api/coverage.py`). Every customer, or one named by `customer_id`. **Each customer is recomputed and committed on its own, and a customer that cannot be evaluated is rolled back alone and returned by name with its reason** — the read path's `coverage_view._recompute_all` cannot be reused, because it tolerates partial in-transaction writes on the understanding that its callers always roll the whole transaction back (safe there, unacceptable on a path that commits). It takes no scope arguments: the official verdict is the default-scope verdict, and asking about another scope is the read-only projection's job
+- **What remains for the real implementation**: recompute automatically on feed update. **When a verdict was computed is now visible through `computed_at`, and there is now a way to fix it. What is left is for it to fix itself without a human pressing anything**
 
 ### C-09 ✅ Own-product allocation for SOFT customers — closed (2026-08-12)
 

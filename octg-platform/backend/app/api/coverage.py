@@ -12,20 +12,34 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session, joinedload
 
 from app.db import get_db
+from app.engines.coverage import recompute_customer
+from app.engines.coverage_scope import (
+    effective_profile_filter,
+    effective_status_filter,
+)
 from app.engines.coverage_view import (
     COVERED_LINE_STATUSES,
     planning_node_path,
     project_coverage,
 )
+from app.engines.inventory import InventoryNotScoped
 from app.engines.well_dates import sort_by_earliest_ros
 from app.models import (
     CoverageStatus,
+    Customer,
     DemandProfile,
     DemandStatus,
     PlanningNode,
     Well,
 )
-from app.schemas import CoverageGridOut, CoverageGridRowOut, CoverageGridFiltersOut
+from app.schemas import (
+    CoverageGridOut,
+    CoverageGridRowOut,
+    CoverageGridFiltersOut,
+    CoverageRecomputeIn,
+    CoverageRecomputeOut,
+    CoverageRecomputeSkippedOut,
+)
 
 router = APIRouter(prefix="/coverage", tags=["coverage"])
 
@@ -166,4 +180,119 @@ def coverage_grid(
         ),
         well_count=len(rows),
         rows=rows,
+    )
+
+
+@router.post("/recompute", response_model=CoverageRecomputeOut)
+def recompute_coverage(
+    payload: CoverageRecomputeIn | None = None,
+    db: Session = Depends(get_db),
+):
+    """Rewrite the stored coverage verdicts. Every customer, or one named customer.
+
+    THE TRIGGER C-08 SAID WAS MISSING
+    =================================
+    `CoverageResult` is written only as a side effect of something happening -- a
+    revision applied, an approval decided, a well status changed, inventory edited,
+    a substitution registered. That is normally right: the verdict follows the fact
+    that changed it. It leaves one hole, and it is the hole this platform actually
+    fell into repeatedly (see HANDOFF §7): after an out-of-band data change, or after
+    an ENGINE fix, the code is correct and the database still holds yesterday's
+    answer, with no legal way to ask for a new one short of inventing a write.
+    `computed_at` on the grid already makes that staleness visible; this makes it
+    fixable.
+
+    IT WRITES THE OFFICIAL VERDICT, SO IT TAKES NO FILTERS
+    =====================================================
+    The official verdict is by definition the one computed under the platform's
+    default scope, so this endpoint reads that scope and passes it -- it does not
+    accept status/profile parameters. The question "what would the verdict be under a
+    different scope" is answered read-only by `app.engines.coverage_view`, which
+    recomputes, yields and then ROLLS BACK precisely so a projection can never be
+    mistaken for, or written over, the stored answer. Letting a caller persist an
+    arbitrary scope here would destroy that distinction.
+
+    PER-CUSTOMER ISOLATION, PER-CUSTOMER COMMIT
+    ===========================================
+    Each customer is recomputed and committed on its own. That is deliberate and it
+    is NOT what the read path does: `coverage_view._recompute_all` runs every customer
+    inside one transaction that its callers always roll back, and its docstring warns
+    that a failed customer can leave partial in-transaction writes. Safe there,
+    unacceptable here -- this path commits, so a half-written customer would become
+    the stored truth. Committing per customer means a customer with incomplete
+    inventory facts costs only itself: it keeps whatever verdicts it already had, and
+    is NAMED in `skipped_customers` rather than being silently dropped or taking every
+    other customer's recompute down with it. The same C-07 lesson, applied to writes.
+    """
+    body = payload or CoverageRecomputeIn()
+
+    if body.customer_id is not None:
+        customer = db.get(Customer, body.customer_id)
+        if customer is None:
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    f"no customer with id {body.customer_id!r}. Nothing was recomputed."
+                ),
+            )
+        customers = [customer]
+    else:
+        customers = db.query(Customer).order_by(Customer.name).all()
+
+    status_filter = effective_status_filter(db)
+    profile_filter = effective_profile_filter(db)
+
+    computed_customers = 0
+    computed_lines = 0
+    skipped: list[CoverageRecomputeSkippedOut] = []
+
+    for customer in customers:
+        try:
+            result = recompute_customer(
+                db,
+                customer,
+                status_filter=status_filter,
+                profile_filter=profile_filter,
+            )
+        except InventoryNotScoped as exc:
+            # Roll back only this customer's partial work, then carry on. The next
+            # customer starts from a clean session.
+            db.rollback()
+            skipped.append(
+                CoverageRecomputeSkippedOut(
+                    customer_id=customer.id,
+                    name=customer.name,
+                    reason=str(exc),
+                )
+            )
+            continue
+        db.commit()
+        computed_customers += 1
+        computed_lines += len(result.by_line)
+
+    scope = (
+        f"status [{', '.join(sorted(s.value for s in status_filter))}] / "
+        f"profile [{', '.join(sorted(p.value for p in profile_filter))}]"
+    )
+    if skipped:
+        note = (
+            f"Recomputed {computed_customers} customer(s) and {computed_lines} demand "
+            f"line(s) under the platform default scope: {scope}. "
+            f"{len(skipped)} customer(s) could NOT be evaluated and keep the verdicts "
+            "they already had -- each is named above with the reason. This is "
+            "isolation, not partial success: a customer whose inventory facts are "
+            "incomplete costs only itself."
+        )
+    else:
+        note = (
+            f"Recomputed {computed_customers} customer(s) and {computed_lines} demand "
+            f"line(s) under the platform default scope: {scope}. These are now the "
+            "official stored verdicts."
+        )
+
+    return CoverageRecomputeOut(
+        computed_customers=computed_customers,
+        computed_lines=computed_lines,
+        skipped_customers=skipped,
+        note=note,
     )

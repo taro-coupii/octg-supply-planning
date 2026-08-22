@@ -3113,6 +3113,90 @@ class BusinessUnitIn(BaseModel):
     name: str
 
 
+class BusinessUnitPatch(BaseModel):
+    """Rename one Business Unit. The name is the only field this accepts.
+
+    There is deliberately no parent field. A BusinessUnit in this platform is FLAT --
+    it has no `parent_id` at all, and `app.engines.coverage` states why: the pool a
+    customer draws from is a flat join and no recursive walk of a hierarchy is needed.
+    A sibling implementation of this platform models BUs as a tree and offers a
+    parent remap; that capability was reviewed and deliberately NOT adopted, because
+    a hierarchy that no engine reads is a field an operator can set and be misled by.
+
+    Renaming changes no coverage verdict: the BU id is what every pool, assignment and
+    scope resolves through, and the name is presentation. It is still guarded like the
+    create path, because the name is the only handle a human has on a BU.
+    """
+
+    name: str
+
+
+class BusinessUnitDeleteBlockedOut(BaseModel):
+    """Why a delete was refused, itemised by what still points at the BU.
+
+    Served as the 409 body rather than a sentence alone so the screen can list the
+    obstacles instead of asking the operator to go hunting. Every count is of rows
+    that would be orphaned -- the BU is an absolute inventory boundary, so a dangling
+    `business_unit_id` is not untidiness, it is a customer whose coverage can no
+    longer be computed at all.
+    """
+
+    business_unit: BusinessUnitOut
+    customer_count: int = 0
+    inventory_on_hand_row_count: int = 0
+    inventory_on_order_row_count: int = 0
+    company_inventory_upload_count: int = 0
+    user_count: int = 0
+    scenario_override_count: int = 0
+    note: str = ""
+
+
+class CoverageRecomputeIn(BaseModel):
+    """Ask the engine to rewrite the stored verdicts. Optionally for one customer.
+
+    `customer_id` omitted means every customer. This is the explicit trigger that
+    C-08 says the platform lacks: stored `CoverageResult` rows are written only when
+    something happens (a revision applied, an approval decided, a well status changed,
+    inventory edited), so after an out-of-band data change -- or an engine fix -- the
+    grid can be correct in code and stale in the database. `computed_at` already makes
+    that staleness visible on the Coverage screen; this makes it fixable without
+    inventing a write just to provoke a recompute.
+
+    It does NOT take status/profile filters. A recompute writes the OFFICIAL verdict,
+    and the official verdict is the one computed under the platform's default scope --
+    see `app.engines.coverage_view.scoped_verdicts` for the read-only projection that
+    answers "what if the scope were different", which never persists anything.
+    """
+
+    customer_id: str | None = None
+
+
+class CoverageRecomputeSkippedOut(BaseModel):
+    """One customer the recompute could not evaluate, named with the reason."""
+
+    customer_id: str
+    name: str
+    reason: str
+
+
+class CoverageRecomputeOut(BaseModel):
+    """What the recompute wrote, and who it could not write for.
+
+    Failures are isolated PER CUSTOMER and each customer is committed on its own, so
+    one customer with incomplete inventory facts cannot cost every other customer its
+    recompute -- the same C-07 lesson the read path learned, applied to the write
+    path. A skipped customer keeps whatever verdicts it already had; nothing is
+    half-written and nothing is silently dropped.
+    """
+
+    #: Customers whose verdicts were rewritten and committed.
+    computed_customers: int
+    #: Demand lines those customers wrote a verdict for.
+    computed_lines: int
+    skipped_customers: list[CoverageRecomputeSkippedOut] = []
+    note: str = ""
+
+
 class BusinessUnitCreatedOut(BaseModel):
     """The created Business Unit, plus what it can and cannot do yet.
 

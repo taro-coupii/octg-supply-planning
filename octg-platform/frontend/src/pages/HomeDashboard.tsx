@@ -20,6 +20,15 @@ import { formatDay } from "./MrpSummary";
  */
 
 const UNCOVERED_SHOWN = 7;
+// The same cap for the change feed. Three columns sharing one sheet were
+// following three different conventions -- one capped with a footer, one
+// linked from its title, one unbounded -- and the unbounded one grew to
+// several times the height of its neighbours, leaving the dividers between
+// them as rules of three different lengths dangling in empty space. Capping
+// it is not hiding anything the other columns do not also hide: the footer
+// states the true total and links to the full list, exactly as Uncovered
+// wells already does.
+const CHANGES_SHOWN = 7;
 
 function Corners() {
   return (
@@ -83,6 +92,7 @@ export default function HomeDashboard() {
     (p) => !(p.approval_id && decided.has(p.approval_id))
   );
   const uncoveredShown = data.uncovered_wells.slice(0, UNCOVERED_SHOWN);
+  const changesShown = data.demand_changes.slice(0, CHANGES_SHOWN);
 
   return (
     <div className="home-industry">
@@ -135,7 +145,7 @@ export default function HomeDashboard() {
             <div className="home-empty">No recent demand changes</div>
           ) : (
             <div className="home-list">
-              {data.demand_changes.map((c) => (
+              {changesShown.map((c) => (
                 // The change names a well; the natural next question is
                 // "what does that well look like now" -- so the row goes there.
                 <Link
@@ -163,6 +173,17 @@ export default function HomeDashboard() {
                 </Link>
               ))}
             </div>
+          )}
+          {data.demand_changes.length > 0 && (
+            <span className="home-col-foot">
+              Showing {changesShown.length} of {data.demand_changes.length}
+              {data.demand_changes.length > changesShown.length && (
+                <>
+                  {" · "}
+                  <Link to="/demand">See all demand lines</Link>
+                </>
+              )}
+            </span>
           )}
         </section>
 

@@ -349,12 +349,15 @@ export default function CoverageWorkspace() {
         for status and <strong>Primary + Contingency</strong> for profile.
       </p>
 
-      <p className="filter-note">
-        Changing demand status or profile makes the server recompute coverage for
-        every customer, so these toggles are debounced by {DEBOUNCE_MS}ms — tick
-        several boxes and only one recompute is requested.
-        {settling && <strong> Waiting for the toggles to settle…</strong>}
-      </p>
+      {/* The debounce interval itself used to be explained here in a standing
+          paragraph. How long the client waits before asking the server is not a
+          fact a planner can act on; that it is currently waiting is. Only the
+          live state survives. */}
+      {settling && (
+        <p className="filter-note filter-note-live" role="status">
+          Waiting for the toggles to settle…
+        </p>
+      )}
 
       {/* Persistent while the projection is on screen: these numbers are a
           read-only recompute, never the stored verdict. Same visual vocabulary

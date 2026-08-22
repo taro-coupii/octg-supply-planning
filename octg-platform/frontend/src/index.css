@@ -14,11 +14,15 @@
    spelling, never their meaning.
    =========================================================================== */
 :root {
-  /* --- Surfaces. Apple's convention: a near-white canvas, pure-white cards,
-         and hairline separation instead of drop shadows doing the work. --- */
-  --canvas: #f2f2f3;
-  --surface: #f2f2f3;
-  --surface-sunken: #e9e9ea;
+  /* --- Surfaces. Three steps, and they must stay three: the page ground is
+         SUNK below the cards, the card surface is the lightest thing on screen,
+         and --surface-sunken is the well nested INSIDE a card. Collapsing the
+         first two (they were both #f2f2f3 until 2026-08-22) leaves every card
+         relying on its hairline alone, which reads as a page of empty frames
+         rather than a page of objects, and makes --shadow-* invisible. --- */
+  --canvas: #e7e7ea;
+  --surface: #fbfbfc;
+  --surface-sunken: #f0f0f3;
   --surface-hover: rgba(29, 31, 32, 0.04);
   --surface-active: rgba(29, 31, 32, 0.07);
 
@@ -89,7 +93,12 @@
   --ok-mid: #7c9885;     /* covered-via-substitute segment */
   --iu-tied: #46647c;    /* utilisation 'tied' — deliberately distinct from the channel bars */
 
-  /* --- Radii. Three steps. Apple rounds generously and consistently. --- */
+  /* --- Radii. DELIBERATELY ZERO, all four steps (the "Industry" retheme).
+         The square edge is the same decision as the condensed headings, the
+         hairlines and the mono instrument labels: this reads as a control
+         panel, not a consumer app. The steps are kept as separate tokens so
+         the decision can be reversed in one block rather than in 166 call
+         sites -- do not re-round one idiom on its own. --- */
   --r-sm: 0px;
   --r-md: 0px;
   --r-lg: 0px;
@@ -161,6 +170,54 @@ h2 { font-size: var(--fs-lg); font-weight: 640; margin: 0 0 6px; }
 h3 { font-size: var(--fs-md); font-weight: 630; margin: 0 0 8px; }
 
 a { color: var(--accent); }
+
+/* ---------------------------------------------------------------------------
+   The affirmative action, declared once
+
+   This was six near-identical declarations -- `.revise-form button`,
+   `.sub-actions button`, `.override-form button`, `.new-scenario-form button`,
+   `.coi-upload-row button`, `.approval-queue-actions button` -- differing only
+   in a couple of pixels of padding and in whether they reached for --brand or
+   --accent. Tokens had made them LOOK consistent while leaving six places to
+   edit and two answers to "what colour is the button that commits?".
+
+   The answer is --accent. The token block states the rule: navy is the brand,
+   blue is what you may click. Anything below that carries only its genuine
+   difference (a size), never a restatement of the whole button.
+   --------------------------------------------------------------------------- */
+.revise-form button,
+.sub-actions button,
+.override-form button,
+.new-scenario-form button,
+.coi-upload-row button,
+.approval-queue-actions button {
+  font: inherit;
+  font-size: var(--fs-body);
+  padding: 6px 12px;
+  border: 1px solid var(--accent);
+  border-radius: var(--r-sm);
+  background: var(--accent);
+  color: var(--text-on-dark);
+  cursor: pointer;
+}
+.revise-form button:disabled,
+.sub-actions button:disabled,
+.override-form button:disabled,
+.new-scenario-form button:disabled,
+.coi-upload-row button:disabled,
+.approval-queue-actions button:disabled { opacity: 0.6; cursor: default; }
+
+@media (hover: hover) and (pointer: fine) {
+  .revise-form button:hover:not(:disabled),
+  .sub-actions button:hover:not(:disabled),
+  .override-form button:hover:not(:disabled),
+  .new-scenario-form button:hover:not(:disabled),
+  .coi-upload-row button:hover:not(:disabled),
+  .approval-queue-actions button:hover:not(:disabled) {
+    background: var(--accent-hover);
+    border-color: var(--accent-hover);
+  }
+}
 
 :focus-visible {
   outline: 2px solid var(--accent);
@@ -240,8 +297,7 @@ tbody tr:last-child td { border-bottom: none; }
 .revise-form { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; min-width: 320px; }
 .revise-form label { display: flex; flex-direction: column; font-size: var(--fs-caption); color: var(--text-muted); gap: 2px; }
 .revise-form input, .revise-form select { padding: 4px 6px; font-size: var(--fs-body); border: 1px solid var(--line); border-radius: var(--r-sm); }
-.revise-form button { padding: 5px 10px; font-size: var(--fs-body); border-radius: var(--r-sm); border: 1px solid var(--brand); background: var(--brand); color: var(--text-on-dark); cursor: pointer; }
-.revise-form button:disabled { opacity: 0.6; cursor: default; }
+.revise-form button { padding: 5px 10px; }
 .revise-form .link-btn { border: none; background: none; color: var(--bad); }
 .form-error { color: var(--bad); font-size: var(--fs-sm); width: 100%; }
 
@@ -283,9 +339,6 @@ tbody tr:last-child td { border-bottom: none; }
 .sub-blocking { margin-top: 8px; font-size: var(--fs-sm); color: var(--bad); }
 
 .sub-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 14px; }
-.sub-actions button { padding: 6px 12px; font-size: var(--fs-body); border-radius: var(--r-sm); border: 1px solid var(--brand); background: var(--brand); color: var(--text-on-dark); cursor: pointer; }
-.sub-actions button:disabled { opacity: 0.6; cursor: default; }
-.sub-actions .btn-reject { background: var(--surface); color: var(--bad); border-color: var(--bad-line); }
 .sub-settled { font-size: var(--fs-body); color: var(--text-muted); }
 
 /* MRP — shared */
@@ -419,8 +472,6 @@ tbody tr:last-child td { border-bottom: none; }
 .override-form { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; background: var(--surface); border: 1px solid var(--line); padding: 14px 16px; border-radius: var(--r-md); box-shadow: var(--shadow-sm); }
 .override-form label { display: flex; flex-direction: column; font-size: var(--fs-caption); color: var(--text-muted); gap: 3px; }
 .override-form input, .override-form select { padding: 5px 7px; font-size: var(--fs-body); border: 1px solid var(--line); border-radius: var(--r-sm); min-width: 150px; }
-.override-form button { padding: 6px 12px; font-size: var(--fs-body); border-radius: var(--r-sm); border: 1px solid var(--brand); background: var(--brand); color: var(--text-on-dark); cursor: pointer; }
-.override-form button:disabled { opacity: 0.6; cursor: default; }
 
 /* Apply -- guarded. Danger styling because it writes production data. */
 .apply-panel { border: 1px solid var(--line); border-radius: var(--r-md); padding: 16px; background: var(--surface); }
@@ -443,7 +494,6 @@ tbody tr:last-child td { border-bottom: none; }
 .new-scenario-form { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; background: var(--surface); border: 1px solid var(--line); padding: 14px 16px; border-radius: var(--r-md); box-shadow: var(--shadow-sm); margin-bottom: 20px; }
 .new-scenario-form label { display: flex; flex-direction: column; font-size: var(--fs-caption); color: var(--text-muted); gap: 3px; }
 .new-scenario-form input, .new-scenario-form select { padding: 5px 7px; font-size: var(--fs-body); border: 1px solid var(--line); border-radius: var(--r-sm); min-width: 180px; }
-.new-scenario-form button { padding: 6px 12px; font-size: var(--fs-body); border-radius: var(--r-sm); border: 1px solid var(--brand); background: var(--brand); color: var(--text-on-dark); cursor: pointer; }
 .mrp-kind { font-size: var(--fs-caption); font-weight: 700; text-transform: uppercase; letter-spacing: var(--track-caption); border-radius: var(--r-sm); padding: 1px 6px; }
 .mrp-kind-added { background: var(--bad-soft); color: var(--bad); }
 .mrp-kind-removed { background: var(--ok-soft); color: var(--ok); }
@@ -951,10 +1001,28 @@ td.empty { color: var(--text-faint); text-align: center; padding: 24px 12px; }
    healthy zero -- which is the one thing this dashboard must never say.
    --------------------------------------------------------------------------- */
 
-.exec-honesty { margin: 0 0 18px; font-size: var(--fs-sm); color: var(--warn-deep); background: var(--warn-soft); border-left: 3px solid var(--warn); border-radius: 0 var(--r-sm) var(--r-sm) 0; padding: 9px 11px; line-height: 1.55; }
 
 .exec-notes { border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface); padding: 12px 16px; margin-bottom: 20px; }
-.exec-notes h3 { margin: 0 0 8px; font-size: var(--fs-sm); text-transform: uppercase; letter-spacing: var(--track-caption); color: var(--text-muted); }
+.filter-note-live { color: var(--text-secondary); font-style: italic; }
+
+.exec-notes > summary {
+  font-size: var(--fs-sm); text-transform: uppercase;
+  letter-spacing: var(--track-caption); color: var(--text-muted);
+  cursor: pointer; list-style: none; display: flex; align-items: center; gap: 6px;
+}
+.exec-notes > summary::-webkit-details-marker { display: none; }
+/* A caret that turns, rather than the platform triangle: it is the same
+   disclosure idiom the MOR rows already use. */
+.exec-notes > summary::before {
+  content: ""; width: 0; height: 0; flex-shrink: 0;
+  border-left: 4px solid currentColor;
+  border-top: 3.5px solid transparent; border-bottom: 3.5px solid transparent;
+  transition: transform var(--dur-fast) var(--ease-out);
+}
+.exec-notes[open] > summary::before { transform: rotate(90deg); }
+.exec-notes > summary:hover { color: var(--text-secondary); }
+.exec-notes[open] > summary { margin-bottom: 8px; }
+.exec-notes-lead { margin: 0 0 8px; font-size: var(--fs-sm); color: var(--text-muted); line-height: 1.55; }
 .exec-notes ul { margin: 0; padding-left: 18px; }
 .exec-notes li { font-size: var(--fs-sm); color: var(--text-muted); line-height: 1.55; margin-bottom: 5px; }
 .exec-notes li:last-child { margin-bottom: 0; }
@@ -1061,8 +1129,7 @@ td.empty { color: var(--text-faint); text-align: center; padding: 24px 12px; }
 
 .coi-upload { border-left: 4px solid var(--brand); }
 .coi-upload-row { display: flex; align-items: center; gap: 10px; margin: 10px 0; }
-.coi-upload-row button { padding: 6px 14px; font-size: var(--fs-body); font-weight: 600; border-radius: var(--r-sm); border: 1px solid var(--brand); background: var(--brand); color: var(--text-on-dark); cursor: pointer; }
-.coi-upload-row button:disabled { opacity: 0.5; cursor: default; }
+.coi-upload-row button { padding: 6px 14px; font-weight: 600; }
 .coi-contract { margin-top: 14px; }
 .coi-contract h4 { margin: 0 0 6px; font-size: var(--fs-sm); text-transform: uppercase; letter-spacing: var(--track-caption); color: var(--text-muted); }
 .coi-never-uploaded { border-left: 4px solid var(--warn); }
@@ -1900,6 +1967,13 @@ td.empty { color: var(--text-faint); text-align: center; padding: 24px 12px; }
 .mor-axis { display: grid; grid-template-columns: 260px 1fr 200px; gap: 14px; align-items: end; padding: 0 14px 6px; }
 .mor-axis-months { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 2px; }
 .mor-axis-months span { font-size: 10px; color: var(--text-faint); text-align: center; letter-spacing: .02em; overflow: hidden; white-space: nowrap; }
+/* The unlabelled months keep their grid slot and show a hairline tick, so the
+   axis still reads as eighteen even though only six carry text. */
+.mor-axis-tick { position: relative; }
+.mor-axis-tick::after {
+  content: ""; position: absolute; bottom: 0; left: 50%;
+  width: 1px; height: 4px; background: var(--line);
+}
 .mor-axis-figures { font-size: var(--fs-caption); color: var(--text-faint); text-align: right; }
 
 .mor-rows { display: flex; flex-direction: column; gap: var(--space-3); }
@@ -1957,6 +2031,9 @@ td.empty { color: var(--text-faint); text-align: center; padding: 24px 12px; }
 .mor-chip-ok { background: var(--ok-soft); color: var(--ok); border: 1px solid var(--ok-line); }
 .mor-chip-unknown { background: var(--warn-soft); color: var(--warn-text); border: 1px solid var(--warn-line); }
 .mor-chip-nolt { background: var(--unmodelled-soft); color: var(--unmodelled); border: 1px solid var(--unmodelled-line); }
+/* The unremarkable state. Used where "nothing to do here" is the majority of
+   rows, so that the coloured chips keep meaning "look at this one". */
+.mor-chip-quiet { background: transparent; color: var(--text-muted); border: 1px solid var(--line); }
 
 .mor-row-unavailable { grid-column: 2 / 4; display: flex; align-items: center; gap: 10px; }
 
@@ -2142,8 +2219,7 @@ figure { box-shadow: none; }
 .approval-queue td { padding: 8px 10px; border-bottom: 1px solid var(--line-faint); }
 .approval-queue td.num, .approval-queue th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .approval-queue-actions { display: inline-flex; gap: 10px; align-items: center; }
-.approval-queue-actions button { padding: 3px 12px; font-size: var(--fs-sm); font-weight: 600; border: 1px solid var(--accent); background: var(--accent); color: #fff; cursor: pointer; }
-.approval-queue-actions button.btn-reject { background: transparent; color: var(--bad); border-color: var(--bad); }
+.approval-queue-actions button { padding: 3px 12px; font-size: var(--fs-sm); font-weight: 600; }
 .approval-queue-actions button:disabled { opacity: .5; cursor: default; }
 .home-col-title-link { font-weight: 400; text-transform: none; letter-spacing: 0; }
 .surplus-mor-link { display: block; font-size: var(--fs-caption); color: var(--accent); text-decoration: none; margin-top: 2px; }
@@ -2165,6 +2241,32 @@ figure { box-shadow: none; }
 .blueprint > .corner.bl { bottom: -6px; left: -6px; }
 .blueprint > .corner.br { bottom: -6px; right: -6px; }
 
+/* ---------------------------------------------------------------------------
+   The decision pair: one vocabulary, three screens
+
+   Approve/Decline is the same operation on Home, on the Approval Queue and in
+   the Substitution Workspace, and it used to wear three different faces:
+   `--brand` fill vs `--accent` fill for the affirmative, and grey outline vs
+   red outline vs pale-red outline for the negative. One operation, one look.
+
+   Decline is NOT red. Red on this platform means "the steel genuinely is not
+   there, and only a mill order fixes it" (see the token block). Declining a
+   substitution is an ordinary, legitimate decision, not a failure state, and
+   spending red on it costs red its meaning on the screens that need it.
+   The weight that makes the decision deliberate comes from ConfirmButton's
+   two-step arm, not from the colour.
+   --------------------------------------------------------------------------- */
+.sub-actions .btn-reject,
+.approval-queue-actions button.btn-reject {
+  background: transparent;
+  color: var(--text);
+  border-color: var(--line-strong);
+}
+.sub-actions .btn-reject:hover:not(:disabled),
+.approval-queue-actions button.btn-reject:hover:not(:disabled) {
+  background: var(--surface-hover);
+}
+
 /* Tabular numerals platform-wide on figures. */
 .num, td.num, .exec-figure-big, .mor-req { font-variant-numeric: tabular-nums; }
 
@@ -2181,8 +2283,18 @@ figure { box-shadow: none; }
 .home-kpi-figure { font-family: "Barlow Condensed", sans-serif; font-weight: 600; font-size: 2.125rem; line-height: 1.1; }
 .home-kpi-heavy { color: var(--bad); }
 .home-kpi-denominator { font-size: var(--fs-lg); color: var(--text-muted); }
-.home-cols { display: grid; grid-template-columns: 1fr 1.15fr 1fr; align-items: start; }
-.home-col { padding: 18px 20px; display: flex; flex-direction: column; gap: 10px; min-height: 300px; }
+/* Stretch, not start. The three columns sit on one drawing sheet and are
+   separated by full-height rules; with `start` each column was only as tall as
+   its own content, so the rules ended at three different heights and read as
+   broken lines rather than as a divided sheet. Stretch is only affordable
+   because all three lists are now capped -- see CHANGES_SHOWN. */
+.home-cols { display: grid; grid-template-columns: 1fr 1.15fr 1fr; align-items: stretch; }
+/* min-width:0 is load-bearing, not tidying. A grid item defaults to
+   min-width:auto, so the approval card's buttons refused to shrink and pushed
+   the whole page past the viewport at 1280 and 1440 (measured: scrollWidth
+   1483 / 1489), carrying the Approve buttons off-screen. It was previously set
+   only inside the <=640 media query, so every laptop width was affected. */
+.home-col { padding: 18px 20px; display: flex; flex-direction: column; gap: 10px; min-height: 300px; min-width: 0; }
 .home-col + .home-col { border-left: 1px solid var(--line); }
 .home-col-title { margin: 0; font-size: var(--fs-body); letter-spacing: .08em; text-transform: uppercase; color: var(--text-secondary); }
 .home-empty { border: 1px dashed var(--line-strong); padding: 22px; text-align: center; font-size: var(--fs-body); color: var(--text-muted); }
@@ -2194,8 +2306,22 @@ figure { box-shadow: none; }
 .home-row-name { font-size: var(--fs-md); font-weight: 500; color: var(--text); text-decoration: none; }
 .home-row-customer { color: var(--text-muted); font-weight: 400; }
 .home-row-sub { font-size: var(--fs-sm); color: var(--text-secondary); }
+/* `.num` conflates two ideas: tabular digits (typography) and nowrap (layout).
+   Nowrap is right for a table cell and wrong for a prose line that merely
+   contains figures -- "Qty 500 -> 500 Mtr - Coverage - -> Covered" cannot be
+   held on one line inside a third of the page. Left unwrapped it pushed Home
+   53px past a 1280 viewport. The phone-only version of this rule fixed the
+   symptom at <=640 only; the conflation itself is what to unpick if `.num`
+   ever gets split into `.num` + `.nowrap`. */
+.home-row-sub.num, .home-approval-product.num { white-space: normal; }
 .home-row .badge { align-self: flex-start; flex-shrink: 0; }
-.home-col-foot { font-family: ui-monospace, Menlo, monospace; font-size: 9.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--text-muted); }
+/* This footer carries sentences and links, not instrument readings. The mono
+   uppercase treatment at 9.5px with .1em tracking is the right voice for a
+   one- or two-word label ("TOTAL TO ORDER") and the wrong one for
+   "Could any be covered by sharing within the business unit? Read-only
+   what-if; changes nothing." -- tracking that opens up a label closes down a
+   sentence. Prose gets the body face at caption size. */
+.home-col-foot { font-size: var(--fs-caption); line-height: 1.55; color: var(--text-muted); margin-top: auto; padding-top: 6px; }
 .home-col-foot a { color: var(--accent); }
 .home-cards { display: flex; flex-direction: column; gap: var(--space-3); }
 .home-approval { padding: 12px; display: flex; flex-direction: column; gap: 8px; }
@@ -2276,9 +2402,6 @@ figure { box-shadow: none; }
      set the page width; min-width 0 lets the rows shrink and names wrap. */
   .home-col, .home-cols, .home-list, .home-row { min-width: 0; }
   .home-row-name, .home-approval-product { overflow-wrap: anywhere; }
-  /* .num means tabular digits AND nowrap -- right for table cells, wrong for
-     this multi-part prose line on a phone. */
-  .home-approval-product.num { white-space: normal; }
   .filter-bar { gap: 10px; }
   .filter-field select, .filter-field input { max-width: 100%; }
   .top-actions { flex-wrap: wrap; justify-content: flex-start; }
@@ -2398,7 +2521,10 @@ table, .diff-line, .scenario-delta, .sub-qty, .share-numbers,
 
 /* The mono micro-label idiom: one size, one tracking. (.mor-axis-months span
    deliberately keeps its .02em — +0.12em would clip the 18-month strip.) */
-.home-kpi-label, .home-col-foot, .sub-hard-warning-label, .runout-flag,
+/* .home-col-foot left this group deliberately: micro size plus .12em tracking
+   is the voice of a two-word instrument label, and that footer carries whole
+   sentences and links. */
+.home-kpi-label, .sub-hard-warning-label, .runout-flag,
 .mor-runout-tag, .mor-safety-tag, .btn-suggested, .tl-add-order {
   font-size: var(--fs-micro);
   letter-spacing: var(--track-micro);
@@ -2541,5 +2667,6 @@ a, button, select, summary, label { touch-action: manipulation; }
   background: var(--warn-soft) !important;
   color: var(--warn-deep) !important;
   box-shadow: inset 0 0 0 1px var(--warn) !important;
+  border-color: var(--warn) !important;
   font-weight: 600;
 }

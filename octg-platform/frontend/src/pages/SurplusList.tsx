@@ -28,7 +28,11 @@ function StatusChip({ row }: { row: SurplusRow }) {
   if (row.surplus > 0) {
     return <span className="mor-chip mor-chip-due">SURPLUS</span>;
   }
-  return <span className="mor-chip mor-chip-ok">FULLY ALLOCATED</span>;
+  // Deliberately NOT the green chip MOR uses for "covered". On this screen
+  // fully-allocated is the ordinary case -- nine rows in ten -- and colouring
+  // the norm builds a green wall that the one genuinely idle position has to
+  // compete with. Colour is reserved for the exceptions above.
+  return <span className="mor-chip mor-chip-quiet">FULLY ALLOCATED</span>;
 }
 
 function SplitBar({ row }: { row: SurplusRow }) {

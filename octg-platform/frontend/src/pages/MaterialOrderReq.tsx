@@ -28,8 +28,18 @@ function fmtQty(v: number) {
 
 function fmtMonth(iso: string) {
   const d = new Date(iso + "T00:00:00");
-  return d.toLocaleDateString("en-GB", { month: "short", year: "2-digit" });
+  // en-US rather than en-GB: en-GB abbreviates September to "Sept", so one
+  // column in twelve is a character wider than the rest and collides with its
+  // neighbour on an 18-month axis. Three letters for every month.
+  return d.toLocaleDateString("en-US", { month: "short", year: "2-digit" });
 }
+
+// An 18-month axis gives each month roughly 47px, and "Sep 26" needs most of
+// that -- so every label was touching the next. Label every third month and
+// leave the rest as a bare tick: the row's own cells still carry the month in
+// their tooltip and in the expanded ledger, so nothing is lost by not
+// repeating it eighteen times across the header.
+const AXIS_LABEL_EVERY = 3;
 
 function UrgencyChip({ row }: { row: MorRow }) {
   if (!row.available) {
@@ -500,9 +510,13 @@ export default function MaterialOrderReq() {
           <div className="mor-axis" aria-hidden="true">
             <span className="mor-axis-label" />
             <div className="mor-axis-months">
-              {grid.months.map((m) => (
-                <span key={m}>{fmtMonth(m)}</span>
-              ))}
+              {grid.months.map((m, i) =>
+                i % AXIS_LABEL_EVERY === 0 ? (
+                  <span key={m}>{fmtMonth(m)}</span>
+                ) : (
+                  <span key={m} className="mor-axis-tick" />
+                )
+              )}
             </div>
             <span className="mor-axis-figures">Total to order</span>
           </div>

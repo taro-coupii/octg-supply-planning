@@ -993,12 +993,6 @@ export default function ExecutiveDashboard() {
         </p>
       )}
 
-      <p className="exec-honesty">
-        Every block below reports whether its figure could be computed. Where it
-        could not, the reason is printed in place of the number — a zero is never
-        substituted for an unknown.
-      </p>
-
       {error !== null && (
         <LoadError what="the executive dashboard" error={error} />
       )}
@@ -1007,16 +1001,31 @@ export default function ExecutiveDashboard() {
 
       {data && (
         <>
-          {data.notes.length > 0 && (
-            <section className="exec-notes">
-              <h3>What these figures do and do not include</h3>
+          {/* Collapsed by default. The content is unchanged and nothing is
+              dropped -- but four paragraphs of standing caveats above the
+              figures pushed the first number below the fold, and they say the
+              same thing on every visit. The guarantee they describe is
+              enforced in the blocks themselves: an unavailable figure prints
+              its reason where the number would be, so the promise is visible
+              where it matters even with this shut. */}
+          <details className="exec-notes">
+            <summary>
+              What these figures do and do not include
+              {data.notes.length > 0 && ` (${data.notes.length})`}
+            </summary>
+            <p className="exec-notes-lead">
+              Every block below reports whether its figure could be computed.
+              Where it could not, the reason is printed in place of the number —
+              a zero is never substituted for an unknown.
+            </p>
+            {data.notes.length > 0 && (
               <ul>
                 {data.notes.map((n, i) => (
                   <li key={i}>{n}</li>
                 ))}
               </ul>
-            </section>
-          )}
+            )}
+          </details>
 
           <section className="card exec-block">
             <h3>Demand trend</h3>
