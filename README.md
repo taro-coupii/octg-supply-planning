@@ -7,7 +7,7 @@ release of a hard assignment in Oracle.
 
 - **Backend**: FastAPI + SQLAlchemy + Alembic (SQLite for dev, Postgres-capable)
 - **Frontend**: React + TypeScript + Vite, plain hand-written CSS, no UI library
-- **Deploy**: Render via Docker — see `render.yaml` and `octg-platform/Dockerfile.deploy`
+- **Deploy**: this repository deliberately carries **no Render Blueprint**. See *Deployment* below.
 
 ## Quick start
 
@@ -29,6 +29,23 @@ Dev logins are seeded by `backend/seed/seed_users.py`: `admin@octg.dev` / `octg-
 > branch `superseded/rebuild-2026-08-20`. See
 > [`docs/VOID-rebuild-2026-08-20.md`](docs/VOID-rebuild-2026-08-20.md) for what
 > was taken, what was deliberately left, and why.
+
+## Deployment
+
+**Nothing deploys from this repository, on purpose.** There is no `render.yaml`
+here and one should not be added.
+
+The running demo is built and deployed from the private working repository, and
+its Blueprint declares a service named `octg-supply-readiness`. A second
+Blueprint in this repository declaring the same service would fight the real one
+for the name; a Blueprint declaring a different one would quietly stand up a
+second, divergent instance of the same demo. Both have already happened once
+here — see [`docs/VOID-rebuild-2026-08-20.md`](docs/VOID-rebuild-2026-08-20.md).
+
+`octg-platform/Dockerfile.deploy` is kept, because it documents how the image is
+actually built (Vite build, then FastAPI serving the result from one process).
+Running it by hand is fine. Wiring it to a hosting provider from this repository
+is not.
 
 ## Documentation
 

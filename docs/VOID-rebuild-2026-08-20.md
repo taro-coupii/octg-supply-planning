@@ -73,6 +73,27 @@ applied, the `AUTH_SECRET` dev fallback, and no object-level authorization —
 the same three holes, tracked here as C-12 / C-13 and the `require_admin` item
 in `MVP_COMPROMISES.md`.
 
+## Its deployment
+
+The rebuild carried its own Render Blueprint — service **`octg-rebuild-uat`**,
+free plan, tracking this repository's `main` branch — and it was **live** at
+`https://octg-rebuild-uat.onrender.com` when the implementation was retired,
+still serving the void build.
+
+Two things follow, and only one of them can be done from a repository:
+
+* **Done here.** `render.yaml` has been removed from `main`, so this repository
+  declares no service at all. That stops the Blueprint resyncing, and it also
+  removes a hazard introduced while retiring the rebuild: `main` briefly carried
+  the *other* repository's Blueprint, which declares `octg-supply-readiness` —
+  the name the real running demo already uses.
+* **Must be done in the Render dashboard.** Removing the Blueprint does not
+  delete a service that already exists. `octg-rebuild-uat` keeps running, and
+  keeps being publicly reachable with seeded demo data and dev credentials,
+  until somebody suspends or deletes it there: Render → the `octg-rebuild-uat`
+  service → *Settings* → *Suspend Service* (reversible) or *Delete Service*
+  (final). Deleting is the right call — the implementation behind it is void.
+
 ## If you need something from it
 
 Read it on `superseded/rebuild-2026-08-20`. Its specs and stage plans are the
