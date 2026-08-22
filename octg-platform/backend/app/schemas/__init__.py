@@ -247,6 +247,15 @@ class DemandRevisionIn(BaseModel):
 class SubstitutionCandidateOut(BaseModel):
     demand_line_id: str
     from_product_id: str
+    #: What the line ORIGINALLY asked for, in the words a planner uses for it.
+    #: A property of the LINE rather than of any one candidate, so it is stamped
+    #: on every row by `app.api.substitution` in the same pass as
+    #: `approval_by_date` -- the engine's candidate carries a full `Product` for
+    #: the `to` side only. Before it existed the screen fell back to the first
+    #: eight characters of the from-product UUID, which is precisely the thing
+    #: this platform tells itself never to show a human: an id is not a name,
+    #: and "88b8370f…" cannot be checked against a pipe tally.
+    from_product_description: str | None = None
     to_product_id: str
     product: ProductOut
     customer_allowed: bool

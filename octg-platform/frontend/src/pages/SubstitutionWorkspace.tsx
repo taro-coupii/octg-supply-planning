@@ -56,8 +56,10 @@ function productLabel(description: string | null, id: string) {
   return description ?? id;
 }
 
-// The candidates API only carries a full Product for the *to* side, so the from
-// side falls back to its id. Shorten it so it does not dominate the row.
+// The from side is a property of the LINE, so the API stamps its description on
+// every candidate. The id remains only as the last resort for a product row that
+// has no description at all -- shortened so it does not dominate the row, but it
+// should never be what a planner actually sees.
 function shortId(id: string) {
   return `${id.slice(0, 8)}…`;
 }
@@ -281,7 +283,8 @@ function CandidateCard({
       <div className="sub-card-head">
         <div className="sub-pair">
           <span className="sub-from" title={candidate.from_product_id}>
-            {shortId(candidate.from_product_id)}
+            {candidate.from_product_description ??
+              shortId(candidate.from_product_id)}
           </span>
           <span className="change-arrow">&rarr;</span>
           <span className="sub-to">

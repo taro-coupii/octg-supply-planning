@@ -154,7 +154,9 @@ def list_substitution_candidates(demand_line_id: str, db: Session = Depends(get_
             pending_load_by_product=pending_load,
         )
     ]
+    from_description = line.product.description if line.product else None
     for out in candidates:
+        out.from_product_description = from_description
         out.approval_by_date_available = abd.available
         out.approval_by_date = abd.approval_by_date
         out.still_recoverable = abd.still_recoverable
