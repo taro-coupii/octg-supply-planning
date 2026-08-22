@@ -1,18 +1,38 @@
-# Build the SPA, then serve it and the API from one FastAPI container.
-FROM node:20-slim AS frontend
+# Single-container demo deployment: Vite build served by the FastAPI process.
+#
+# Authentication is required on every endpoint (2026-08-11, HANDOFF §6): the
+# 2026-08-10 note that this image was wide open no longer holds. Set
+# AUTH_SECRET in the host's environment (render.yaml generates one) --
+# without it the image falls back to the dev signing secret and tokens are
+# forgeable (MVP_COMPROMISES.md C-12). Dev logins are seeded at startup:
+# admin@octg.dev / planner+<bu>@octg.dev, password "octg-dev" -- anyone
+# holding the URL still gets in with those, so share accordingly.
+#
+# The database is the COMMITTED dev.db (the staged demo state). It lives on the
+# container's own filesystem, so a redeploy or restart resets the demo to this
+# exact state -- for a demo that is a feature, not a loss. `alembic upgrade
+# head` runs at startup so a dev.db that lags the code's migrations (the exact
+# incident HANDOFF.md §0A records) self-heals instead of 500ing, and
+# seed_users re-provisions the dev logins (idempotent by email).
+
+# --- Stage 1: frontend build -------------------------------------------------
+FROM node:22-slim AS frontend
 WORKDIR /fe
-COPY octg-platform/frontend/package.json octg-platform/frontend/package-lock.json ./
+COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
-COPY octg-platform/frontend/ ./
+COPY frontend/ ./
+# Empty API base => the app calls its own origin; no CORS, no per-host config.
 ENV VITE_API_BASE=""
 RUN npm run build
 
-FROM python:3.11-slim
+# --- Stage 2: backend + static ----------------------------------------------
+FROM python:3.12-slim
 WORKDIR /app
-COPY octg-platform/backend/requirements.txt ./
+COPY backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-COPY octg-platform/backend/ ./
-COPY --from=frontend /fe/dist ./spa
-ENV SPA_DIST=/app/spa
-EXPOSE 8000
-CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+COPY backend/ .
+COPY --from=frontend /fe/dist ./static
+
+ENV DATABASE_URL="sqlite:////app/dev.db"
+# $PORT is injected by most PaaS hosts (Render, Railway, Fly); 8000 otherwise.
+CMD ["sh", "-c", "python -m alembic upgrade head && python -m seed.seed_users && python -m uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]

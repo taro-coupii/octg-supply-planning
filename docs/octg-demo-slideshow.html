@@ -1,0 +1,317 @@
+<title>OCTG Platform — End-to-End Demo</title>
+<style>
+  :root{color-scheme:dark;--bg:#0d1117;--panel:#161b22;--ink:#e6edf3;--soft:#8b949e;--line:#30363d;
+    --accent:#e08a3c;--ok:#2f8f52;--ok-bg:#10281a;--bad:#e07571;--bad-bg:#2c1414;
+    --warn:#d3a442;--warn-bg:#2e2410;--info:#7391a6;}
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,"Segoe UI",Roboto,sans-serif;height:100%;overflow:hidden}
+  #stage{position:relative;height:100vh;width:100vw}
+  .slide{position:absolute;inset:0;display:none;flex-direction:column;padding:40px 60px}
+  .slide.active{display:flex}
+  .step-tag{font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--accent);font-weight:700;margin-bottom:6px}
+  .slide h1{font-size:28px;margin:0 0 18px;text-wrap:balance}
+  .mock{flex:1;background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden;display:flex;flex-direction:column;min-height:0}
+  .mock-bar{background:#0b0f14;padding:8px 16px;font-size:11px;color:var(--soft);border-bottom:1px solid var(--line);display:flex;justify-content:space-between}
+  .mock-body{padding:20px 26px;overflow:auto;flex:1;font-size:14px;line-height:1.55}
+  .kpi-row{display:flex;gap:14px;margin:6px 0 16px;flex-wrap:wrap}
+  .kpi{background:#0f151b;border:1px solid var(--line);border-radius:8px;padding:10px 16px;min-width:130px}
+  .kpi .v{font-size:20px;font-weight:700;font-variant-numeric:tabular-nums}
+  .kpi .l{font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--soft)}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px}
+  th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--line)}
+  th{color:var(--soft);font-size:10.5px;text-transform:uppercase;letter-spacing:.04em}
+  .badge{display:inline-block;padding:2px 9px;border-radius:999px;font-size:11px;font-weight:700}
+  .b-ok{background:var(--ok-bg);color:var(--ok)}
+  .b-bad{background:var(--bad-bg);color:var(--bad)}
+  .b-warn{background:var(--warn-bg);color:var(--warn)}
+  .b-info{background:#1c1e3a;color:#8c92e6}
+  .arrow{color:var(--soft);margin:0 6px}
+  .diff-old{color:var(--bad);text-decoration:line-through;font-family:ui-monospace,monospace}
+  .diff-new{color:var(--ok);font-weight:700;font-family:ui-monospace,monospace}
+  .callout{background:#20140a;border:1px solid var(--accent);border-left:4px solid var(--accent);border-radius:6px;padding:10px 14px;font-size:12.5px;margin:10px 0}
+  .callout.warn{background:var(--bad-bg);border-color:var(--bad)}
+  .callout.good{background:var(--ok-bg);border-color:var(--ok)}
+  .reason{font-size:12px;color:var(--soft);font-style:italic;margin-top:3px}
+  #caption{background:#000;color:#fff;padding:16px 60px;font-size:16px;line-height:1.5;min-height:70px;display:flex;align-items:center}
+  #caption b{color:var(--accent)}
+  #controls{position:absolute;bottom:8px;right:20px;display:flex;gap:8px;align-items:center;z-index:5}
+  #controls button{background:#21262d;color:#fff;border:1px solid var(--line);border-radius:6px;padding:6px 14px;cursor:pointer;font-size:13px}
+  #controls button:hover{background:#30363d}
+  #progress{position:absolute;top:0;left:0;height:3px;background:var(--accent);transition:width .1s linear;z-index:5}
+  #counter{color:var(--soft);font-size:12px;margin-right:10px}
+</style>
+
+<div id="progress"></div>
+<div id="stage">
+
+  <div class="slide active" data-narr="Demand updates go through a template. First, download a template pre-filled with the current demand data.">
+    <div class="step-tag">Step 1 · Demand update — export the template</div>
+    <h1>Demand Import — Download current data as template</h1>
+    <div class="mock">
+      <div class="mock-bar"><span>localhost:5173/demand/import</span><span>●●●</span></div>
+      <div class="mock-body">
+        <p>Customer: <b>Demo Operator A</b></p>
+        <div class="callout">Download a customer's live demand as an .xlsx already in the column contract — every existing line, no row cap. Edit the cells you mean to change and upload it here.</div>
+        <table>
+          <tr><th>File</th><th>Rows</th><th>Columns</th></tr>
+          <tr><td>demand-Demo-Operator-A.xlsx</td><td>80</td><td>well, product, quantity, ros_date, status, profile</td></tr>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div class="slide" data-narr="Edit the downloaded template. Here the TBG 3-1/2 demand for Auklet-24 is raised from 4,000 to 6,500 metres.">
+    <div class="step-tag">Step 1 · Demand update — edit</div>
+    <h1>Edit the template — quantity change</h1>
+    <div class="mock">
+      <div class="mock-bar"><span>demand-template.xlsx — Excel</span><span>●●●</span></div>
+      <div class="mock-body">
+        <table>
+          <tr><th>Well</th><th>Product</th><th>Qty (before → after)</th><th>ROS</th></tr>
+          <tr><td>Well Auklet-24</td><td>TBG 3-1/2 10.2 13CR80 VAM TOP</td><td><span class="diff-old">4,000</span> <span class="arrow">→</span> <span class="diff-new">6,500 Mtr</span></td><td>2027-08-20</td></tr>
+          <tr><td>Well Dunlin-23</td><td>CSG 10-3/4 55.5 L80 VAM 21</td><td><span class="diff-old">4,000</span> <span class="arrow">→</span> <span class="diff-new">2,500 Mtr</span></td><td>2027-08-10</td></tr>
+        </table>
+        <div class="callout">Two real edits made in the downloaded workbook, saved, ready to re-upload.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="slide" data-narr="Upload the edited file. All 80 rows are parsed and matched automatically against the existing demand lines.">
+    <div class="step-tag">Step 1 · Demand update — upload</div>
+    <h1>Upload and stage</h1>
+    <div class="mock">
+      <div class="mock-bar"><span>localhost:5173/demand/import</span><span>●●●</span></div>
+      <div class="mock-body">
+        <div class="kpi-row">
+          <div class="kpi"><div class="v">80</div><div class="l">Rows</div></div>
+          <div class="kpi"><div class="v">80</div><div class="l">Revision suggestions</div></div>
+          <div class="kpi"><div class="v">0</div><div class="l">Errors</div></div>
+          <div class="kpi"><div class="v">1</div><div class="l">Conflicts detected</div></div>
+        </div>
+        <p><b>Excel row 2</b> — Well Auklet-24, TBG 3-1/2 10.2 13CR80 VAM TOP</p>
+        <p>Quantity: <span class="diff-old">4,000</span> <span class="arrow">→</span> <span class="diff-new">6,500</span> — <span class="badge b-info">Suggestion: Revision</span></p>
+      </div>
+    </div>
+  </div>
+
+  <div class="slide" data-narr="The review screen. On the last row of the same batch a conflict was detected, because someone else had already changed that line. Inspect the difference, then approve.">
+    <div class="step-tag">Step 3 · Review the changes</div>
+    <h1>Review — conflict detected and resolved</h1>
+    <div class="mock">
+      <div class="mock-bar"><span>localhost:5173/demand/import — Review</span><span>●●●</span></div>
+      <div class="mock-body">
+        <div class="callout warn">
+          <b>CONFLICT</b> — Excel row 81 (Well Wigeon-27). Somebody else changed this line since the file was staged: it was at revision 3 then, and is at revision 4 now. The diff shown to you was computed against a value that no longer exists.
+        </div>
+        <p>Live quantity/ROS: 1,200 at 2027-10-24 (revision 4) — staging said 1,200 at 2027-10-24 (revision 3)</p>
+        <p><span class="badge b-warn">Needs override approval</span> → reviewed → <span class="badge b-ok">Approved</span></p>
+        <div class="callout good">Applied. 80 revised, 0 created, 0 skipped.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="slide" data-narr="Next, upload customer-owned inventory. Oracle carries only our own company's stock, so material the customer owns is uploaded separately through this feature.">
+    <div class="step-tag">Step 2 · Upload customer-owned inventory</div>
+    <h1>Customer-Owned Inventory — upload</h1>
+    <div class="mock">
+      <div class="mock-bar"><span>localhost:5173/customer-owned-inventory</span><span>●●●</span></div>
+      <div class="mock-body">
+        <div class="callout">The one inventory table this platform itself owns — uploaded by a user, not projected from Oracle. Consumed FIRST for its product, ahead of company stock and any Oracle assignment; never offered to another customer.</div>
+        <table>
+          <tr><th>Product</th><th>Qty (before → after)</th><th>Uploaded at</th></tr>
+          <tr><td>CSG 11-3/4 65.0 P110 VAM 21</td><td><span class="diff-old">3,000</span> <span class="arrow">→</span> <span class="diff-new">3,500 Mtr</span></td><td>2026-08-06</td></tr>
+          <tr><td>TBG 3-1/2 9.3 L80 VAM TOP</td><td><span class="diff-old">1,000</span> <span class="arrow">→</span> <span class="diff-new">1,200 Mtr</span></td><td>2026-08-06</td></tr>
+        </table>
+        <p>Result: <b>2 replaced, 0 created, 0 errors</b>.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="slide" data-narr="Among the uncovered lines, some can take a substitute. The Substitution Workspace shows the approval state of layers 1-4. Here only the well approval is outstanding, and a warning flags that its approval-by date has already passed.">
+    <div class="step-tag">Step 4 · Substitution proposal — before submission</div>
+    <h1>Substitution Workspace — Well Falcon-04</h1>
+    <div class="mock">
+      <div class="mock-bar"><span>localhost:5173/demand-lines/.../substitution</span><span>●●●</span></div>
+      <div class="mock-body">
+        <p>bd06cf8d… → CSG 9-5/8 58.4 Q125 VAM 21 SMLS &nbsp; <span class="badge b-bad">Blocked</span></p>
+        <div class="callout warn"><b>MILL FALLBACK ALREADY IMPOSSIBLE — Jan 9, 2026.</b> Even a primary-product order placed TODAY cannot land by ROS 2026-08-25. Rejecting this substitution now cannot be recovered by ordering the primary product.</div>
+        <p>Layer 1 Technical <span class="badge b-ok">Cleared</span> · Layer 2 Customer <span class="badge b-ok">Allowed</span> · Layer 3 Well Approval <span class="badge b-warn">Pending</span> · Layer 4 Inventory <span class="badge b-ok">Sufficient</span></p>
+        <p>Free/available 6,000 / Required 4,000 — <b>Recommended action: Request customer approval</b></p>
+      </div>
+    </div>
+  </div>
+
+  <div class="slide" data-narr="Pressing Approve completes the layer-3 well approval and the line turns Usable. The stock can now be drawn, and the well's coverage improves.">
+    <div class="step-tag">Step 4 · Substitution proposal — after approval</div>
+    <h1>Substitution approved</h1>
+    <div class="mock">
+      <div class="mock-bar"><span>localhost:5173/demand-lines/.../substitution</span><span>●●●</span></div>
+      <div class="mock-body">
+        <p>bd06cf8d… → CSG 9-5/8 58.4 Q125 VAM 21 SMLS &nbsp; <span class="badge b-ok">Usable</span></p>
+        <p>Layer 1 Technical <span class="badge b-ok">Cleared</span> · Layer 2 Customer <span class="badge b-ok">Allowed</span> · Layer 3 Well Approval <span class="diff-old">Pending</span> <span class="arrow">→</span> <span class="badge b-ok">Approved</span> · Layer 4 Inventory <span class="badge b-ok">Sufficient</span></p>
+        <div class="callout good">Approval approved — no action needed. 6,000 free covers the 4,000 required.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="slide" data-narr="Create a what-if scenario. It tests pulling Auklet-24 forward (an earlier ROS) and pushing Dunlin-23 back (a later ROS) at the same time. Nothing is saved.">
+    <div class="step-tag">Step 5 · What-if scenario — demand changes</div>
+    <h1>Scenario: rig schedule swap</h1>
+    <div class="mock">
+      <div class="mock-bar"><span>localhost:5173/scenarios/... — Timeline / Form view</span><span>●●●</span></div>
+      <div class="mock-body">
+        <div class="callout">WHAT-IF ONLY — NOT THE OFFICIAL COVERAGE. Nothing has been saved. The official coverage verdict stays unchanged until this scenario is applied to the base plan.</div>
+        <table>
+          <tr><th>Well</th><th>Product</th><th>ROS change</th><th>Effect</th></tr>
+          <tr><td>Auklet-24</td><td>TBG 3-1/2 10.2 13CR80</td><td><span class="diff-old">2027-08-20</span> <span class="arrow">→</span> <span class="diff-new">2026-09-15</span> (pulled forward)</td><td>Lead time no longer fits → runout risk</td></tr>
+          <tr><td>Dunlin-23</td><td>CSG 10-3/4 55.5 L80</td><td><span class="diff-old">2027-08-10</span> <span class="arrow">→</span> <span class="diff-new">2027-12-15</span> (pushed back)</td><td>Frees pool inventory → surplus for others</td></tr>
+        </table>
+        <div class="kpi-row">
+          <div class="kpi"><div class="v">8 → 8</div><div class="l">Covered wells</div></div>
+          <div class="kpi"><div class="v">66 → 66</div><div class="l">Covered lines</div></div>
+          <div class="kpi"><div class="v">1 <span style="color:var(--accent)">of 7</span></div><div class="l">MRP rows affected</div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="slide" data-narr="On the MRP side, the pull-forward produces one line that needs an additional order. The pushed-back well, conversely, lets an on-order adjustment optimise inventory.">
+    <div class="step-tag">Step 5 · What-if scenario — knock-on effect in MRP</div>
+    <h1>MRP impact of the scenario</h1>
+    <div class="mock">
+      <div class="mock-bar"><span>Scenario preview — MRP changes</span><span>●●●</span></div>
+      <div class="mock-body">
+        <div class="callout warn">Pulling Auklet-24 forward compresses lead time — the coverage engine now flags 1 of 7 MRP recommendation rows as affected. An additional mill order becomes necessary to close the runout gap this creates.</div>
+        <div class="callout good">Pushing Dunlin-23 back releases its reserved pool share earlier in the timeline — that quantity becomes surplus, available to redirect toward the on-order plan for other wells sharing the same product.</div>
+        <p>Nothing has moved yet — this is exactly what "Apply to base plan" exists to commit, once agreed with the customer.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="slide" data-narr="Merlin-05 belongs to a hard-allocation customer. The stock is on the shelf, but it is not assigned to this line, so the line stays Uncovered. The reason column states plainly that the assignment must be released in Oracle.">
+    <div class="step-tag">Step 6 · Instruction to release a hard allocation</div>
+    <h1>Well Merlin-05 — blocked by unassigned hard stock</h1>
+    <div class="mock">
+      <div class="mock-bar"><span>localhost:5173/wells/... (Demo Operator B, HARD)</span><span>●●●</span></div>
+      <div class="mock-body">
+        <p>Well Merlin-05 &nbsp; <span class="badge b-bad">Uncovered</span></p>
+        <table>
+          <tr><th>Product</th><th>Qty</th><th>ROS</th><th>Coverage</th><th>Reason</th></tr>
+          <tr><td>CSG 7 29.0 L80 VAM 21</td><td>5,000 Mtr</td><td>2027-09-09</td><td><span class="badge b-bad">Uncovered</span></td>
+              <td class="reason">No inventory assigned to this demand line — under hard allocation, unassigned pool stock does not provide coverage.</td></tr>
+        </table>
+        <div class="callout">The platform never creates or removes a hard reservation itself. The corrective action is: release or reassign this stock in Oracle, then re-sync.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="slide" data-narr="A read-only what-if checks whether this uncovered demand could be closed by sharing stock inside the BU. Demo Operator B's Merlin-05 comes back as coverable from surplus stock in the same Business Unit.">
+    <div class="step-tag">Step 8 · Verifying stock sharing within the BU</div>
+    <h1>Cross-customer sharing what-if</h1>
+    <div class="mock">
+      <div class="mock-bar"><span>localhost:5173/analysis/sharing — Demo Operator B</span><span>●●●</span></div>
+      <div class="mock-body">
+        <div class="callout">PROJECTION — NOT SAVED. Sharing is evaluated within one Business Unit only. It deliberately disagrees with the official customer-scoped verdict.</div>
+        <div class="kpi-row">
+          <div class="kpi"><div class="v">2</div><div class="l">Uncovered lines examined</div></div>
+          <div class="kpi"><div class="v">2</div><div class="l">Would be covered by sharing</div></div>
+          <div class="kpi"><div class="v">0</div><div class="l">Still not coverable</div></div>
+        </div>
+        <p>Well Merlin-05 · CSG 7 29.0 L80 VAM 21 — Required 5,000, ROS 2027-09-09</p>
+        <p>Official verdict: <span class="badge b-bad">Uncovered (customer-scoped)</span> &nbsp; If shared within the BU: <span class="badge b-ok">Would be covered — projection</span></p>
+      </div>
+    </div>
+  </div>
+
+  <div class="slide" data-narr="Finally, the MRP Summary is trimmed to the minimum order quantity while confirming the extra orders implied by the pull-forward scenario. Lines that can still be ordered and lines that are unrecoverable and need escalation are shown as clearly separate.">
+    <div class="step-tag">Step 7 · MRP review and order adjustment</div>
+    <h1>MRP Summary — orderable vs. escalate</h1>
+    <div class="mock">
+      <div class="mock-bar"><span>localhost:5173/mrp</span><span>●●●</span></div>
+      <div class="mock-body">
+        <table>
+          <tr><th>Product</th><th>Qty</th><th>ROS</th><th>Recommended order date</th><th>Lead time</th><th>Reason</th></tr>
+          <tr><td>CSG 13-3/8 68.0 P110</td><td>7,000 Mtr</td><td>2027-08-20</td><td>2026-11-04</td><td>9.5 mo</td><td>7000 unresolved across 2 line(s) after coverage and substitution</td></tr>
+          <tr><td>TBG 4-1/2 12.6 13CR80</td><td>9,000 Mtr</td><td>2027-06-01</td><td>2026-11-15</td><td>6.5 mo</td><td>9000 unresolved across 1 line(s) after coverage and substitution</td></tr>
+        </table>
+        <p><span class="badge b-ok">Orderable · 10</span> — place the mill order by the recommended date. Escalate rows (lead time no longer fits) are listed separately, never mixed into this table.</p>
+        <p>Export to Excel produces the same numbers as this screen — Summary on tab 1, demand/inventory/runout/lead-time justification on the tabs after it.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="slide" data-narr="The Executive Dashboard. Coverage is measured on demand quantity, with the well count shown alongside for reference. The period-on-period trend is reproduced from real data, so the quarterly movement is visible.">
+    <div class="step-tag">Step 9 · Executive Dashboard walkthrough</div>
+    <h1>Executive Dashboard</h1>
+    <div class="mock">
+      <div class="mock-bar"><span>localhost:5173/executive</span><span>●●●</span></div>
+      <div class="mock-body">
+        <div class="kpi-row">
+          <div class="kpi"><div class="v">35,450 Mtr</div><div class="l">3-month demand</div></div>
+          <div class="kpi"><div class="v">−62.7%</div><div class="l">vs. previous 3mo</div></div>
+          <div class="kpi"><div class="v">60,450 Mtr</div><div class="l">12-month demand</div></div>
+          <div class="kpi"><div class="v">−50.6%</div><div class="l">vs. previous 12mo</div></div>
+        </div>
+        <div class="callout">Coverage is measured by DEMAND QUANTITY, not well count — a well short by 50 and one short by 40,000 count alike by well, but not by quantity. Business Unit is the hard inventory boundary, so an unscoped total spans pools that cannot supply one another.</div>
+        <p>Soft allocation coverage, first-runout list, and incoming supply are all shown beside coverage — never netted into it, and never a bare zero where the answer is genuinely unknown.</p>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<div id="caption"></div>
+<div id="controls">
+  <span id="counter">1 / 12</span>
+  <button id="prevBtn">◀ Prev</button>
+  <button id="playBtn">▶ Play</button>
+  <button id="nextBtn">Next ▶</button>
+</div>
+
+<script>
+  const slides = document.querySelectorAll('.slide');
+  const caption = document.getElementById('caption');
+  const counter = document.getElementById('counter');
+  const progress = document.getElementById('progress');
+  let idx = 0, playing = false, timer = null, progTimer = null;
+  const DURATION = 7000;
+
+  function render() {
+    slides.forEach((s, i) => s.classList.toggle('active', i === idx));
+    caption.innerHTML = '<b>Narration:</b>&nbsp;' + slides[idx].dataset.narr;
+    counter.textContent = (idx + 1) + ' / ' + slides.length;
+    progress.style.width = '0%';
+  }
+  function next() { idx = (idx + 1) % slides.length; render(); if (playing) restartProgress(); }
+  function prev() { idx = (idx - 1 + slides.length) % slides.length; render(); if (playing) restartProgress(); }
+
+  function restartProgress() {
+    clearInterval(progTimer);
+    let start = Date.now();
+    progTimer = setInterval(() => {
+      const pct = Math.min(100, ((Date.now() - start) / DURATION) * 100);
+      progress.style.width = pct + '%';
+    }, 50);
+  }
+
+  function play() {
+    playing = true;
+    document.getElementById('playBtn').textContent = '⏸ Pause';
+    restartProgress();
+    timer = setInterval(next, DURATION);
+  }
+  function pause() {
+    playing = false;
+    document.getElementById('playBtn').textContent = '▶ Play';
+    clearInterval(timer);
+    clearInterval(progTimer);
+    progress.style.width = '0%';
+  }
+
+  document.getElementById('nextBtn').onclick = () => { pause(); next(); };
+  document.getElementById('prevBtn').onclick = () => { pause(); prev(); };
+  document.getElementById('playBtn').onclick = () => { playing ? pause() : play(); };
+
+  render();
+  play();
+</script>

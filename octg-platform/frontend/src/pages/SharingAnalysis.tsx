@@ -1,157 +1,87 @@
 import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import Breadcrumbs from "../components/Breadcrumbs";
-import Freshness from "../components/Freshness";
-import VerdictChip from "../components/VerdictChip";
-import { ApiError, apiGet } from "../lib/api";
-import { writeParam } from "../lib/urlState";
-import { errorMessage } from "./admin/shared";
+import { api, CustomerSummary } from "../api/client";
+import SharingPanel from "../components/SharingPanel";
 
-type Customer = { id: string; name: string };
-
-type Line = {
-  id: string;
-  well_id: string;
-  product_id: string;
-  unit: string;
-  quantity: number;
-};
-
-type Peer = {
-  customer_id: string;
-  customer_name: string;
-  releasable_qty_by_unit: number;
-  would_cover: boolean;
-};
-
-type SharingEntry = {
-  line: Line;
-  official_verdict: string;
-  peers: Peer[];
-};
-
+/**
+ * The cross-customer sharing what-if, per customer.
+ *
+ * The panel itself carries all the projection labelling — see SharingPanel. This
+ * page only picks the customer, and says the one thing a planner arriving here
+ * cold needs to know before reading any number: the Business Unit is a hard
+ * boundary, so a customer can be offered nothing while identical steel sits in
+ * quantity in another BU. That is the boundary holding, not a bug.
+ */
 export default function SharingAnalysis() {
   const [params, setParams] = useSearchParams();
-  const customerId = params.get("customer_id") ?? "";
-
-  const [customers, setCustomers] = useState<Customer[]>([]);
-  const [entries, setEntries] = useState<SharingEntry[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [fetchedAt, setFetchedAt] = useState<Date | null>(null);
+  const customerId = params.get("customer") ?? "";
+  const [customers, setCustomers] = useState<CustomerSummary[]>([]);
 
   useEffect(() => {
-    apiGet<Customer[]>("/customers")
-      .then((c) => setCustomers(c))
-      .catch((e: Error) => setError(e.message));
+    api.getCustomers().then(setCustomers).catch(() => setCustomers([]));
   }, []);
 
-  const load = () => {
-    if (!customerId) {
-      setEntries(null);
-      return;
-    }
-    apiGet<SharingEntry[]>(`/analysis/sharing?customer_id=${customerId}`)
-      .then((d) => {
-        setEntries(d);
-        setFetchedAt(new Date());
-        setError(null);
-      })
-      // Keep previously-loaded data on screen; only surface the error.
-      .catch((e: ApiError | Error) => setError(errorMessage(e)));
-  };
-
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(load, [customerId]);
-
-  const setCustomer = (value: string) => {
-    setParams(writeParam(params, "customer_id", value || null));
-  };
+  const selected = customers.find((c) => c.id === customerId) ?? null;
 
   return (
     <div>
-      <Breadcrumbs items={[{ label: "Home", to: "/" }, { label: "Sharing" }]} />
-      <div className="card">
-        <div className="page-header">
-          <h1>Sharing Analysis</h1>
-          <Freshness fetchedAt={fetchedAt} onRefresh={load} />
+      <div className="scenario-head">
+        <div>
+          <h1>Business Unit sharing what-if</h1>
+          <p className="scenario-sub">
+            Could this customer&apos;s uncovered demand be met if inventory were
+            shared across customers within the same Business Unit?
+          </p>
         </div>
-
-        <p className="banner-warn">
-          Releasable stock shown here is currently covering the donor's own demand. Releasing it would create a
-          shortfall for the donor. Read-only what-if — official verdicts unchanged.
-        </p>
-
-        {error && <p className="inline-error">{error}</p>}
-
-        <fieldset>
-          <legend>Customer</legend>
-          <select value={customerId} onChange={(e) => setCustomer(e.target.value)}>
-            <option value="">Select a customer…</option>
+        <label className="filter-field">
+          <span>Customer</span>
+          <select
+            value={customerId}
+            onChange={(e) => {
+              const v = e.target.value;
+              if (v) setParams({ customer: v });
+              else setParams({});
+            }}
+          >
+            <option value="">Choose a customer…</option>
             {customers.map((c) => (
               <option key={c.id} value={c.id}>
                 {c.name}
               </option>
             ))}
           </select>
-        </fieldset>
-
-        {!customerId && <p className="hint">Select a customer to see their uncovered/unrecoverable lines.</p>}
-
-        {customerId && entries && (
-          <table className="admin-table">
-            <thead>
-              <tr>
-                <th>Line</th>
-                <th>Official verdict</th>
-                <th>Peers (releasable / would cover)</th>
-              </tr>
-            </thead>
-            <tbody>
-              {entries.length === 0 && (
-                <tr>
-                  <td colSpan={3}>No uncovered/unrecoverable lines for this customer.</td>
-                </tr>
-              )}
-              {entries.map((entry) => (
-                <tr key={entry.line.id}>
-                  <td>
-                    {entry.line.product_id} — {entry.line.quantity} {entry.line.unit}
-                  </td>
-                  <td>
-                    <VerdictChip verdict={entry.official_verdict} />
-                  </td>
-                  <td>
-                    {entry.peers.length === 0 ? (
-                      "—"
-                    ) : (
-                      <table className="admin-table nested-table">
-                        <thead>
-                          <tr>
-                            <th>Customer</th>
-                            <th>Releasable qty</th>
-                            <th>Would cover</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {entry.peers.map((p) => (
-                            <tr key={p.customer_id}>
-                              <td>{p.customer_name}</td>
-                              <td>
-                                {p.releasable_qty_by_unit} {entry.line.unit}
-                              </td>
-                              <td>{p.would_cover ? "✓" : "—"}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
+        </label>
       </div>
+
+      <p className="filter-note">
+        Sharing is evaluated <strong>within one Business Unit only</strong>. Stock
+        held in any other Business Unit is never offered, however large the
+        quantity — the BU is a hard inventory boundary, so a customer whose BU
+        holds no surplus is correctly offered nothing even when an identical
+        product sits in bulk elsewhere.
+        {selected && (
+          <>
+            {" "}
+            {selected.name} has allocation policy{" "}
+            <strong>{selected.allocation_policy}</strong>, which is what its
+            official coverage verdict is judged by.
+          </>
+        )}
+      </p>
+
+      {customerId ? (
+        <SharingPanel
+          customerId={customerId}
+          title={`Sharing what-if — ${selected?.name ?? customerId}`}
+        />
+      ) : (
+        <div className="card">
+          <div className="empty">
+            Choose a customer to run the what-if. Nothing is computed until you
+            do, and nothing this analysis reports is ever saved.
+          </div>
+        </div>
+      )}
     </div>
   );
 }

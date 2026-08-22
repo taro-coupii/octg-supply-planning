@@ -1,347 +1,441 @@
-"""MOR (Material Order Requirements) engine (spec §MORエンジン, 裁定 M-4).
-New time-phased engine, independent of MRP's split (owned/company) ledger —
-MOR nets a single running balance per (bu, product) against booked receipts
-and scope-filtered demand, and turns net deficits into order requirements.
+"""Material Order Requirements -- the monthly order grid.
 
-Rulings implemented:
-- Netting: month-by-month running balance = opening (current on_hand total +
-  customer_owned total, per M-4 customer-filter rules below) + booked PO
-  receipts (expected_date in that month) − scope-filtered demand issues.
-  Recommended orders (MOR's own output) are NOT fed back into this balance —
-  MOR reports what is needed, it does not assume its own advice was already
-  acted on.
-- Deficit / requirement algorithm (spec: 増分不足を初発月に required_qty,
-  安全在庫は独立トリガーだが二重発注しない — implemented as ONE unified
-  deficit series so physical and safety-stock deficits never double-count):
-    minimum_level[m] = safety_stock if a SafetyStock row exists for (bu,
-        product), else 0.
-    deficit[m] = max(0, minimum_level[m] − balance[m])
-    requirement at month m = deficit[m] − deficit[m-1] (deficit[-1] = 0),
-        emitted only when that increment is > 0, with need_month = m.
-  Because minimum_level is safety_stock (a constant >= 0) when a safety row
-  exists, deficit-to-safety at any given balance is always >= the pure
-  physical deficit (0 minimum) at that same balance, so this single series
-  is the tighter of the two everywhere and no separate summation is needed —
-  a physical requirement is never separately re-added on top of a safety one.
-- Markers (independent of the requirement series, spec pinned distinct):
-    physical_runout = first month whose balance < 0 (computed from balance[],
-        entirely independent of any safety_stock row).
-    safety_breach = first month whose balance < safety_stock, only if a
-        SafetyStock row exists for (bu, product); may land in an EARLIER
-        month than physical_runout, or never fire.
-    order_deadline = ex_mill_month of the first (earliest need_month)
-        requirement, or None if there are no requirements.
-- ex_mill_month = need_month − lead_time_months. LeadTime resolution order
-  (most specific wins): (bu_id, product_id) row > (None, product_id) row >
-  (bu_id, None) row > (None, None) row > 0 months if no row matches at all.
-  A requirement is `overdue` when its ex_mill_month's calendar month is
-  strictly before `as_of`'s month (i.e. the order should already have been
-  placed).
-- M-4 customer filter: when `customer_id` is given, the ledger for that
-  customer's BU only considers that BU's on_hand/on_order, and ONLY that one
-  customer's customer_owned rows (never other customers' owned material, and
-  never another BU's stock at all — BU is an absolute boundary, same as
-  allocation's A-3). A customer with no business_unit_id yields a result with
-  rows=[] and `unavailable_reason` set instead of raising, so the API layer
-  can render an explanation.
-- This engine never writes CoverageResult and never reads/affects it — safety
-  stock and MOR requirements are wholly outside coverage's verdict logic
-  (invariant 3 regression: coverage results before/after calling this engine
-  must be identical).
+Mirrors the customer workbook's "Material Order Req" tab, which is the sheet
+procurement actually orders from: one row per product, demand bucketed by ROS
+month, netted against today's inventory position, and the residual shown BOTH
+in the month the steel is needed (`order_requirement`) and in the month the
+order must leave for the mill (`order_by_month` = ROS month minus the
+product's total attribute lead time).
+
+NETTING, PRECISELY
+------------------
+Per product, with months m1..mN from today:
+
+    opening      = on_hand + customer_owned(if known)
+    arrivals(m)  = on-order quantity promised inside month m (undated PO
+                   quantity is NEVER netted -- it has no month to land in, and
+                   is reported beside the grid instead)
+    short(m)     = max(0, cumulative_demand(m) - opening - cumulative_arrivals(m))
+    order_requirement(m) = short(m) - short(m-1)
+
+The incremental form makes the row SUM to the workbook's `Ttl. Order RQMT`
+(total demand minus everything already secured, floored at 0) while placing
+each shortfall in the first month it actually bites.
+
+Customer-owned stock is included in `opening` for the same reason the MRP
+runout opens with it (`app.engines.mrp.RunoutPoint`): it genuinely absorbs
+that customer's demand before any company steel is drawn, so excluding it
+would order steel the yard will never ship. It still is not ours -- the
+position block reports it separately.
+
+WHAT THIS ENGINE REFUSES TO DO
+------------------------------
+* A product with NO on-hand row anywhere is returned as an UNAVAILABLE row
+  (reason attached), never as a row netted from a fabricated 0 -- and never
+  dropped, which would silently shorten the order list. One unknown product
+  must not kill the whole grid either (the C-07 lesson).
+* A product whose lead time is not fully modelled gets
+  `order_by_month = None` with the model's own note: an order-by date from a
+  partial lead time is a confident wrong deadline.
+* Demand quantities are never summed across products: every figure on a row
+  is in that row's own `unit_of_measure`.
 """
 
-from __future__ import annotations
-
+import math
 from dataclasses import dataclass
+from datetime import date, datetime
 
-from app.engines.coverage import _scope, scoped_lines
+from sqlalchemy.orm import Session
+
+from app.engines.inventory import InventoryRowMissing, on_order_rows
+from app.engines.lead_time import resolve_lead_time
+from app.engines.mrp import _included_lines, _inventory_position, InventoryPosition
 from app.models import (
+    BusinessUnit,
     Customer,
-    CustomerOwnedInventory,
-    InventoryOnHand,
-    InventoryOnOrder,
-    LeadTime,
+    DemandLine,
+    Product,
     SafetyStock,
+    UnitOfMeasure,
 )
-from app.services.dates import today
 
-MIN_HORIZON = 1
-MAX_HORIZON = 36
-DEFAULT_HORIZON = 12
+#: Default horizon, matching the workbook's 18-month view.
+DEFAULT_HORIZON_MONTHS = 18
 
 
-def _clamp_horizon(horizon: int | None) -> int:
-    if horizon is None:
-        horizon = DEFAULT_HORIZON
-    return max(MIN_HORIZON, min(MAX_HORIZON, horizon))
+def _month_start(value: date | datetime) -> date:
+    if isinstance(value, datetime):
+        value = value.date()
+    return value.replace(day=1)
 
 
-def _month_key(d) -> str:
-    return f"{d.year:04d}-{d.month:02d}"
+def _add_months(month: date, count: int) -> date:
+    total = month.month - 1 + count
+    return date(month.year + total // 12, total % 12 + 1, 1)
 
 
-def _month_seq(as_of, horizon: int) -> list[str]:
-    keys = []
-    y, m = as_of.year, as_of.month
-    for i in range(horizon):
-        mm = m + i
-        yy = y + (mm - 1) // 12
-        mm = (mm - 1) % 12 + 1
-        keys.append(f"{yy:04d}-{mm:02d}")
-    return keys
+def _months_axis(today: date, horizon: int) -> list[date]:
+    first = _month_start(today)
+    return [_add_months(first, i) for i in range(horizon)]
 
 
-def _shift_month(key: str, delta_months: int) -> str:
-    y, m = int(key[:4]), int(key[5:7])
-    total = y * 12 + (m - 1) - delta_months
-    yy, mm = divmod(total, 12)
-    return f"{yy:04d}-{mm + 1:02d}"
+@dataclass(frozen=True)
+class MorCell:
+    """One (product, month) cell. All quantities in `unit_of_measure` -- the
+    unit is repeated per cell (matching the row's) so every quantity-bearing
+    payload states its unit, per the platform-wide schema contract."""
+
+    unit_of_measure: UnitOfMeasure
+    month: date
+    demand: float
+    arrivals: float
+    #: Projected balance at month END, after arrivals and demand, before any
+    #: new order. Negative = cumulative unmet demand to date.
+    projected_balance: float
+    #: The shortfall that FIRST bites in this month -- the quantity to order
+    #: for this month's demand. Sums across the row to `total_order_requirement`.
+    order_requirement: float
+    #: Month the order covering `order_requirement` must be placed (ex-mill):
+    #: this month minus the product's total lead time. None when the lead time
+    #: is not modelled. A month before today means the order is ALREADY LATE.
+    order_by_month: date | None = None
 
 
-@dataclass
-class Requirement:
-    need_month: str
-    qty: float
-    unit: object
-    ex_mill_month: str
-    overdue: bool
-
-
-@dataclass
+@dataclass(frozen=True)
 class MorRow:
-    bu_id: str
-    product_id: str
-    unit: object
-    opening_balance: float
-    strip: list  # list of {"month": str, "closing_balance": float}
-    markers: dict
-    requirements: list[Requirement]
+    #: The planner-set safety stock (product's unit). None = not set, which is
+    #: a real state distinct from an explicit 0. When set, the order
+    #: requirement triggers as the balance dips BELOW this level.
     safety_stock: float | None
+    product_id: str
+    product_description: str | None
+    unit_of_measure: UnitOfMeasure
+    available: bool
+    position: InventoryPosition | None = None
+    lead_time_months: float | None = None
+    lead_time_modelled: bool = False
+    lead_time_note: str = ""
+    total_demand: float = 0.0
+    #: Overdue portion of `total_demand`: demand whose ROS month has already
+    #: passed. It is folded into the first month of the grid (lateness does
+    #: not cancel demand) and labelled here as its own bucket per the
+    #: 2026-08-12 product-owner decision -- never silently blended.
+    total_overdue_demand: float = 0.0
+    total_order_requirement: float = 0.0
+    #: True exactly when something must be ordered inside the horizon -- the
+    #: workbook's Order Flag.
+    order_flag: bool = False
+    #: Earliest order_by_month across cells with a requirement; the sort key
+    #: that puts the most urgent rows first. None when nothing is required or
+    #: the lead time is unmodelled.
+    first_order_by: date | None = None
+    #: True when `first_order_by` is before the current month: the mill order
+    #: should already have been placed.
+    already_late: bool = False
+    cells: tuple[MorCell, ...] = ()
+    reason: str | None = None
 
 
-@dataclass
-class MorResult:
-    rows: list[MorRow]
-    unavailable_reason: str | None = None
+@dataclass(frozen=True)
+class MorGrid:
+    months: tuple[date, ...]
+    horizon_months: int
+    generated_for_customer_id: str | None
+    rows: tuple[MorRow, ...] = ()
+    #: Products whose demand exists but whose position is unknown -- present in
+    #: `rows` as unavailable entries; counted here so the header can say so.
+    unavailable_count: int = 0
+    notes: tuple[str, ...] = ()
 
 
-def _lead_time_months(db, bu_id: str, product_id: str) -> int:
-    rows = db.query(LeadTime).all()
-    by_key = {(r.business_unit_id, r.product_id): r.months for r in rows}
-    for key in [(bu_id, product_id), (None, product_id), (bu_id, None), (None, None)]:
-        if key in by_key:
-            return by_key[key]
-    return 0
+def _arrivals_by_month(
+    db: Session, product_id: str, business_unit_id: str | None = None
+) -> dict[date, float]:
+    """Promised on-order arrivals per month. Undated quantity is deliberately
+    absent -- it has no month to land in; the position block reports it
+    (`InventoryPosition.on_order_undated`) beside the grid instead.
 
-
-def _safety_stock(db, bu_id: str, product_id: str):
-    row = (
-        db.query(SafetyStock)
-        .filter(SafetyStock.business_unit_id == bu_id, SafetyStock.product_id == product_id)
-        .first()
-    )
-    return row.quantity if row is not None else None
-
-
-def _stock_bu_products(db, bu_id_filter: str | None = None) -> dict[tuple[str, str], object]:
-    keys: dict[tuple[str, str], object] = {}
-    oh_query = db.query(InventoryOnHand)
-    oo_query = db.query(InventoryOnOrder)
-    if bu_id_filter is not None:
-        oh_query = oh_query.filter(InventoryOnHand.business_unit_id == bu_id_filter)
-        oo_query = oo_query.filter(InventoryOnOrder.business_unit_id == bu_id_filter)
-    for row in oh_query.all():
-        keys[(row.business_unit_id, row.product_id)] = row.unit
-    for row in oo_query.all():
-        keys.setdefault((row.business_unit_id, row.product_id), row.unit)
-    return keys
-
-
-def _owned_bu_products(
-    db, customer_bu: dict[str, str], bu_id_filter: str | None, filter_customer
-) -> dict[tuple[str, str], object]:
-    """(bu, product) -> unit for every CustomerOwnedInventory row, keyed by
-    the owning customer's BU (never stock tables) — this is what makes an
-    owned-only product (zero on_hand/on_order) visible."""
-    keys: dict[tuple[str, str], object] = {}
-    query = db.query(CustomerOwnedInventory)
-    if filter_customer is not None:
-        query = query.filter(CustomerOwnedInventory.customer_id == filter_customer.id)
-    for row in query.all():
-        bu_id = customer_bu.get(row.customer_id)
-        if bu_id is None:
-            continue
-        if bu_id_filter is not None and bu_id != bu_id_filter:
-            continue
-        keys.setdefault((bu_id, row.product_id), row.unit)
-    return keys
-
-
-def mor_rows(db, horizon: int | None = None, as_of=None, customer_id: str | None = None) -> MorResult:
-    horizon = _clamp_horizon(horizon)
-    as_of = as_of or today()
-    month_keys = _month_seq(as_of, horizon)
-    statuses, profiles = _scope(db)
-
-    filter_customer = None
-    bu_id_filter = None
-    if customer_id is not None:
-        filter_customer = db.get(Customer, customer_id)
-        if filter_customer is None:
-            return MorResult(rows=[], unavailable_reason=f"Customer {customer_id} not found")
-        if not filter_customer.business_unit_id:
-            return MorResult(
-                rows=[], unavailable_reason=f"Customer {filter_customer.name} has no business unit assigned"
-            )
-        bu_id_filter = filter_customer.business_unit_id
-
-    all_customers = db.query(Customer).all()
-    customer_bu = {c.id: c.business_unit_id for c in all_customers}
-
-    stock_products = _stock_bu_products(db, bu_id_filter=bu_id_filter)
-    owned_products = _owned_bu_products(db, customer_bu, bu_id_filter, filter_customer)
-
-    # BUs to consider: stock-derived, owned-derived, and (when unfiltered)
-    # every BU that owns a customer at all — a demand-only product can appear
-    # for any of those. M-4: filtered to exactly one BU when customer_id set.
-    if bu_id_filter is not None:
-        bu_ids = {bu_id_filter}
+    `business_unit_id` scopes to one BU (the customer-filtered grid);
+    None sums every BU (the system-wide grid, same stance as MRP)."""
+    if business_unit_id is not None:
+        bu_ids = [business_unit_id]
     else:
-        bu_ids = {bu for (bu, _) in stock_products} | {bu for (bu, _) in owned_products}
-        bu_ids |= {bu for bu in customer_bu.values() if bu is not None}
-
-    # Pre-compute per-BU scoped demand by (product, month), and the
-    # (bu, product) -> unit map for demand-only products (zero stock/owned).
-    # When filtered to a customer, only that customer's own lines count (M-4).
-    issues_by_bu: dict[str, dict[tuple[str, str], float]] = {}
-    demand_products: dict[tuple[str, str], object] = {}
+        bu_ids = [bu.id for bu in db.query(BusinessUnit).all()]
+    per_month: dict[date, float] = {}
     for bu_id in bu_ids:
-        acc: dict[tuple[str, str], float] = {}
-        if filter_customer is not None:
-            customers = [filter_customer]
-        else:
-            customers = [c for c in all_customers if c.business_unit_id == bu_id]
-        for cust in customers:
-            for line in scoped_lines(db, cust.id, statuses, profiles):
-                key = _month_key(line.ros_date)
-                demand_products.setdefault((bu_id, line.product_id), line.unit)
-                if key not in month_keys:
-                    continue
-                acc[(line.product_id, key)] = acc.get((line.product_id, key), 0.0) + line.quantity
-        issues_by_bu[bu_id] = acc
+        for row in on_order_rows(db, bu_id, {product_id}):
+            if row.expected_arrival_date is None:
+                continue
+            key = _month_start(row.expected_arrival_date)
+            per_month[key] = per_month.get(key, 0.0) + max(
+                0.0, row.quantity or 0.0
+            )
+    return per_month
 
-    merged_products: dict[tuple[str, str], object] = {}
-    merged_products.update(stock_products)
-    for key, unit in demand_products.items():
-        merged_products.setdefault(key, unit)
-    for key, unit in owned_products.items():
-        merged_products.setdefault(key, unit)
-    bu_products = [(bu_id, product_id, unit) for (bu_id, product_id), unit in merged_products.items()]
+
+def _row_for(
+    db: Session,
+    product: Product,
+    lines: list[DemandLine],
+    months: list[date],
+    today_month: date,
+    business_unit_id: str | None = None,
+    customer_id: str | None = None,
+) -> MorRow:
+    demand_by_month: dict[date, float] = {}
+    overdue_demand = 0.0
+    for line in lines:
+        key = _month_start(line.ros_date)
+        # Demand with ROS before the horizon start is not deleted by the axis:
+        # it lands in the first month, where its shortfall (if any) bites
+        # immediately -- the same "late demand is still demand" rule the
+        # incoming-supply block applies to overdue POs. It is COUNTED and
+        # LABELLED (total_overdue_demand), per the 2026-08-12 decision.
+        if key < months[0]:
+            key = months[0]
+            overdue_demand += line.quantity
+        if key > months[-1]:
+            continue  # beyond the horizon: out of this grid's question
+        demand_by_month[key] = demand_by_month.get(key, 0.0) + line.quantity
+
+    try:
+        position = _inventory_position(
+            db,
+            product,
+            business_unit_id=business_unit_id,
+            customer_id=customer_id,
+        )
+    except InventoryRowMissing as exc:
+        return MorRow(
+            safety_stock=None,
+            product_id=product.id,
+            product_description=product.description,
+            unit_of_measure=product.unit_of_measure,
+            available=False,
+            total_demand=sum(demand_by_month.values()),
+            total_overdue_demand=overdue_demand,
+            reason=str(exc),
+        )
+
+    breakdown = resolve_lead_time(db, product)
+    lead_months = breakdown.total_months if breakdown.modelled else None
+    # Whole months for the calendar offset: 4.5 months of lead time means the
+    # order must leave 5 calendar months ahead, not 4 -- rounding down would
+    # manufacture half a month of slack that does not exist.
+    lead_offset = math.ceil(breakdown.total_months) if breakdown.modelled else None
+
+    arrivals = _arrivals_by_month(db, product.id, business_unit_id)
+
+    # Safety stock raises the bar: an order is required as soon as the
+    # projected balance would dip BELOW the safety level, not only at zero.
+    # No row means no safety stock (a real state), contributing nothing.
+    safety_row = (
+        db.query(SafetyStock).filter(SafetyStock.product_id == product.id).first()
+    )
+    safety = max(0.0, safety_row.quantity) if safety_row is not None else 0.0
+
+    opening = position.on_hand + (position.customer_owned or 0.0)
+    cum_demand = 0.0
+    cum_arrivals = 0.0
+    prev_short = 0.0
+    cells: list[MorCell] = []
+    first_order_by: date | None = None
+    for month in months:
+        month_demand = demand_by_month.get(month, 0.0)
+        month_arrivals = arrivals.get(month, 0.0)
+        cum_demand += month_demand
+        cum_arrivals += month_arrivals
+        short = max(0.0, cum_demand + safety - opening - cum_arrivals)
+        requirement = short - prev_short
+        prev_short = short
+        order_by = (
+            _add_months(month, -lead_offset) if lead_offset is not None else None
+        )
+        if requirement > 0 and order_by is not None:
+            if first_order_by is None or order_by < first_order_by:
+                first_order_by = order_by
+        cells.append(
+            MorCell(
+                unit_of_measure=product.unit_of_measure,
+                month=month,
+                demand=month_demand,
+                arrivals=month_arrivals,
+                projected_balance=opening + cum_arrivals - cum_demand,
+                order_requirement=requirement,
+                order_by_month=order_by if requirement > 0 else None,
+            )
+        )
+
+    total_requirement = prev_short
+    return MorRow(
+        safety_stock=safety if safety_row is not None else None,
+        product_id=product.id,
+        product_description=product.description,
+        unit_of_measure=product.unit_of_measure,
+        available=True,
+        position=position,
+        lead_time_months=lead_months,
+        lead_time_modelled=breakdown.modelled,
+        lead_time_note=breakdown.note,
+        total_demand=cum_demand,
+        total_overdue_demand=overdue_demand,
+        total_order_requirement=total_requirement,
+        order_flag=total_requirement > 0,
+        first_order_by=first_order_by,
+        already_late=(
+            first_order_by is not None and first_order_by < today_month
+        ),
+        cells=tuple(cells),
+        reason=None,
+    )
+
+
+def order_requirements(
+    db: Session,
+    customer_id: str | None = None,
+    horizon_months: int = DEFAULT_HORIZON_MONTHS,
+    today: date | None = None,
+) -> MorGrid:
+    """The grid: one row per product with in-scope demand inside the horizon.
+
+    Scope and filters are exactly `app.engines.mrp._included_lines` -- the
+    demand coverage evaluates, optionally narrowed to one customer -- so this
+    grid can never disagree with the MRP summary beside it about WHAT counts
+    as demand.
+    """
+    today = today or date.today()
+    today_month = _month_start(today)
+    months = _months_axis(today, horizon_months)
+
+    # A customer-filtered grid nets against THAT customer's Business Unit and
+    # THAT customer's owned steel only. The unfiltered grid keeps the
+    # system-wide procurement stance it shares with MRP (see
+    # `mrp.InventoryPosition` for why the all-BU sum is right there and
+    # nowhere else) -- and says so in the notes.
+    business_unit_id: str | None = None
+    if customer_id is not None:
+        customer = db.get(Customer, customer_id)
+        business_unit_id = (
+            customer.business_unit_id if customer is not None else None
+        )
+
+    lines_by_product: dict[str, list[DemandLine]] = {}
+    for line in _included_lines(db, customer_id):
+        lines_by_product.setdefault(line.product_id, []).append(line)
 
     rows: list[MorRow] = []
-    for bu_id, product_id, unit in bu_products:
-        on_hand_rows = (
-            db.query(InventoryOnHand)
-            .filter(
-                InventoryOnHand.business_unit_id == bu_id,
-                InventoryOnHand.product_id == product_id,
-                InventoryOnHand.unit == unit,
-            )
-            .all()
-        )
-        company0 = sum(r.quantity for r in on_hand_rows)
-
-        if filter_customer is not None:
-            owned_rows = (
-                db.query(CustomerOwnedInventory)
-                .filter(
-                    CustomerOwnedInventory.customer_id == filter_customer.id,
-                    CustomerOwnedInventory.product_id == product_id,
-                    CustomerOwnedInventory.unit == unit,
-                )
-                .all()
-            )
-        else:
-            customer_ids = [c.id for c in db.query(Customer).filter(Customer.business_unit_id == bu_id).all()]
-            owned_rows = (
-                db.query(CustomerOwnedInventory)
-                .filter(
-                    CustomerOwnedInventory.customer_id.in_(customer_ids or [""]),
-                    CustomerOwnedInventory.product_id == product_id,
-                    CustomerOwnedInventory.unit == unit,
-                )
-                .all()
-            )
-        owned0 = sum(r.quantity for r in owned_rows)
-        opening_balance = company0 + owned0
-
-        booked_rows = (
-            db.query(InventoryOnOrder)
-            .filter(
-                InventoryOnOrder.business_unit_id == bu_id,
-                InventoryOnOrder.product_id == product_id,
-                InventoryOnOrder.unit == unit,
-            )
-            .all()
-        )
-        booked_by_month: dict[str, float] = {k: 0.0 for k in month_keys}
-        for r in booked_rows:
-            if r.expected_date is None:
-                continue
-            key = _month_key(r.expected_date)
-            if key in booked_by_month:
-                booked_by_month[key] += r.quantity
-
-        issues_for_product = issues_by_bu.get(bu_id, {})
-
-        safety = _safety_stock(db, bu_id, product_id)
-        lead_time = _lead_time_months(db, bu_id, product_id)
-
-        strip = []
-        balance = opening_balance
-        physical_runout = None
-        safety_breach = None
-        prev_deficit = 0.0
-        requirements: list[Requirement] = []
-        for key in month_keys:
-            issues = issues_for_product.get((product_id, key), 0.0)
-            balance = balance + booked_by_month.get(key, 0.0) - issues
-            strip.append({"month": key, "closing_balance": balance})
-
-            if physical_runout is None and balance < 0:
-                physical_runout = key
-            if safety is not None and safety_breach is None and balance < safety:
-                safety_breach = key
-
-            minimum_level = safety if safety is not None else 0.0
-            deficit = max(0.0, minimum_level - balance)
-            increment = deficit - prev_deficit
-            if increment > 1e-9:
-                ex_mill = _shift_month(key, lead_time)
-                overdue = ex_mill < _month_key(as_of)
-                requirements.append(
-                    Requirement(need_month=key, qty=increment, unit=unit, ex_mill_month=ex_mill, overdue=overdue)
-                )
-            prev_deficit = deficit
-
-        order_deadline = requirements[0].ex_mill_month if requirements else None
-        markers = {
-            "order_deadline": order_deadline,
-            "physical_runout": physical_runout,
-            "safety_breach": safety_breach,
-        }
-
-        rows.append(
-            MorRow(
-                bu_id=bu_id,
+    for product_id, lines in lines_by_product.items():
+        product = db.get(Product, product_id)
+        if product is None:
+            # A demand line pointing at a deleted product must not 500 the
+            # grid -- same rule as an unknown position.
+            rows.append(MorRow(
+                safety_stock=None,
                 product_id=product_id,
-                unit=unit,
-                opening_balance=opening_balance,
-                strip=strip,
-                markers=markers,
-                requirements=requirements,
-                safety_stock=safety,
-            )
+                product_description=None,
+                unit_of_measure=UnitOfMeasure.MTR,
+                available=False,
+                total_demand=sum(l.quantity for l in lines),
+                total_overdue_demand=sum(
+                    l.quantity
+                    for l in lines
+                    if _month_start(l.ros_date) < today_month
+                ),
+                reason=(
+                    f"Product {product_id} no longer exists; its demand "
+                    "cannot be netted."
+                ),
+            ))
+            continue
+        if customer_id is not None and business_unit_id is None:
+            rows.append(MorRow(
+                safety_stock=None,
+                product_id=product.id,
+                product_description=product.description,
+                unit_of_measure=product.unit_of_measure,
+                available=False,
+                total_demand=sum(l.quantity for l in lines),
+                total_overdue_demand=sum(
+                    l.quantity
+                    for l in lines
+                    if _month_start(l.ros_date) < today_month
+                ),
+                reason=(
+                    "This customer is not mapped to a Business Unit, so it "
+                    "has no inventory pool to net against. Map the customer "
+                    "in Administration and retry."
+                ),
+            ))
+            continue
+        row = _row_for(
+            db,
+            product,
+            lines,
+            months,
+            today_month,
+            business_unit_id=business_unit_id,
+            customer_id=customer_id,
         )
+        if row.total_demand > 0 or not row.available:
+            rows.append(row)
 
-    return MorResult(rows=rows, unavailable_reason=None)
+    # Most urgent first: already-late orders, then earliest order-by, then the
+    # unavailable rows (they need a data fix before they can need an order),
+    # then everything quiet. Name ties broken for a stable order.
+    def sort_key(row: MorRow):
+        if not row.available:
+            return (2, date.max, row.product_description or "")
+        if row.first_order_by is not None:
+            return (0 if row.already_late else 1, row.first_order_by, row.product_description or "")
+        return (3, date.max, row.product_description or "")
+
+    rows.sort(key=sort_key)
+
+    unavailable = sum(1 for r in rows if not r.available)
+    notes = [
+        "Order requirements are netted from company stock PLUS customer-owned "
+        "stock (it absorbs that customer's demand first), then from purchase "
+        "orders in the month they are promised. Undated purchase-order "
+        "quantity is never netted -- it has no month to land in.",
+        (
+            "Filtered to one customer: positions and arrivals are scoped to "
+            "that customer's Business Unit, and only that customer's owned "
+            "steel is counted."
+            if customer_id is not None
+            else "All customers: positions are summed across every Business "
+            "Unit -- the system-wide procurement view, same as MRP. This is "
+            "an ordering total, not a coverage figure."
+        ),
+        "Overdue demand (ROS month already passed) still counts: it is folded "
+        "into the first month of the grid and reported per row as "
+        "total_overdue_demand.",
+        "Products with a safety stock set trigger an order requirement as soon "
+        "as the projected balance would dip below that level, not only at "
+        "zero.",
+        "The order-by month subtracts the product's total attribute lead time "
+        "from the month of need. Products without a fully modelled lead time "
+        "show requirements but no order-by date.",
+    ]
+    if unavailable:
+        # Scope-aware: on a filtered grid the row may exist in ANOTHER BU --
+        # claiming "no row in any Business Unit" would assert something this
+        # request never checked.
+        notes.append(
+            f"{unavailable} row(s) could not be netted -- see each row's own "
+            "reason (unknown inventory position"
+            + (
+                " in this customer's Business Unit"
+                if customer_id is not None
+                else " in any Business Unit"
+            )
+            + ", or an unresolvable product/customer). They are listed "
+            "without figures rather than netted from a fabricated 0."
+        )
+    return MorGrid(
+        months=tuple(months),
+        horizon_months=horizon_months,
+        generated_for_customer_id=customer_id,
+        rows=tuple(rows),
+        unavailable_count=unavailable,
+        notes=tuple(notes),
+    )

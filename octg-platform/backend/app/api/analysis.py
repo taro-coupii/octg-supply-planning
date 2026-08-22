@@ -1,128 +1,85 @@
-# C-01R resolved (stage 7): protected via app.main's include_router(dependencies=[...]).
-"""spec §API row 8: GET /analysis/sharing. Read-only what-if — no writes."""
+"""Analysis endpoints -- read-only what-if projections.
+
+Nothing under this router mutates state. In particular the cross-customer
+sharing route deliberately does NOT call `db.commit()`: the analysis writes
+nothing (see app.engines.sharing for the four mechanisms enforcing that), so
+there is nothing to commit and no path by which a GET could overwrite the
+official coverage answer.
+"""
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.engines.coverage import _scope
-from app.engines.sharing import sharing_analysis
-from app.engines.surplus import surplus_rows
-from app.models import Product
+from app.engines.coverage_scope import (
+    effective_profile_filter,
+    effective_status_filter,
+)
+from app.engines.coverage_view import scoped_verdicts
+from app.engines.sharing import cross_customer_sharing
+from app.engines.surplus import surplus_report
+from app.models import BusinessUnit, Customer, DemandProfile, DemandStatus
+from app.schemas import CrossCustomerSharingOut, SurplusReportOut
 
-router = APIRouter(prefix="/analysis")
-
-# spec E-2: non-default-scope reads are recomputed in-memory and are NOT the
-# official stored verdicts (surplus itself never persists, but the warning
-# still signals "this differs from the Administration default scope view").
-SCOPE_OVERRIDE_WARNING = "Recomputed read-only — NOT the official stored verdicts"
-
-
-class LineOut(BaseModel):
-    id: str
-    well_id: str
-    product_id: str
-    unit: str
-    quantity: float
+router = APIRouter(prefix="/analysis", tags=["analysis"])
 
 
-class PeerOut(BaseModel):
-    customer_id: str
-    customer_name: str
-    releasable_qty_by_unit: float
-    would_cover: bool
+@router.get("/cross-customer-sharing", response_model=CrossCustomerSharingOut)
+def get_cross_customer_sharing(customer_id: str, db: Session = Depends(get_db)):
+    """Which of this customer's UNCOVERED demand could BU-level sharing cover?
 
+    A read-only what-if. The official coverage verdict remains customer-scoped
+    and is untouched by this call. Sharing is evaluated within the customer's
+    Business Unit only -- stock in any other BU is never offered, whatever its
+    quantity -- and only genuine surplus (what is left after every customer in
+    the BU has taken its own committed quantity) is on the table.
 
-class SharingEntryOut(BaseModel):
-    line: LineOut
-    official_verdict: str
-    peers: list[PeerOut]
-
-
-@router.get("/sharing", response_model=list[SharingEntryOut])
-def get_sharing_analysis(customer_id: str, db: Session = Depends(get_db)):
-    result = sharing_analysis(db, customer_id)
-    if result is None:
+    A customer with no Business Unit mapped is treated as isolated: the response
+    is empty and `notes` explains why.
+    """
+    customer = db.get(Customer, customer_id)
+    if customer is None:
         raise HTTPException(status_code=404, detail="Customer not found")
-    return result
+    analysis = cross_customer_sharing(db, customer)
+    return CrossCustomerSharingOut.model_validate(analysis, from_attributes=True)
 
-
-class ScopeOut(BaseModel):
-    statuses: list[str]
-    profiles: list[str]
-
-
-class SurplusRowOut(BaseModel):
-    product: str
-    unit: str
-    on_hand: float
-    allocated: float
-    surplus: float
-    obsolete: float
-
-
-class SurplusOut(BaseModel):
-    rows: list[SurplusRowOut]
-    totals_by_unit: dict[str, SurplusRowOut]
-    identity_ok: bool
-    scope: ScopeOut
-    scope_is_default: bool
-    warning: str | None = None
-
-
-@router.get("/surplus", response_model=SurplusOut)
+@router.get("/surplus", response_model=SurplusReportOut)
 def get_surplus(
-    status: list[str] | None = Query(None),
-    profile: list[str] | None = Query(None),
+    business_unit_id: str | None = None,
+    status: list[DemandStatus] | None = Query(default=None),
+    profile: list[DemandProfile] | None = Query(default=None),
     db: Session = Depends(get_db),
 ):
-    # spec E-2: default scope = params absent entirely; an explicitly-passed
-    # (even empty) list is a non-default override.
-    scope_is_default = status is None and profile is None
-    default_statuses, default_profiles = _scope(db)
-    statuses = set(status) if status is not None else default_statuses
-    profiles = set(profile) if profile is not None else default_profiles
+    """The Surplus List: on-hand decomposed into allocated / surplus /
+    obsolete per (BU, product). Read-only; quantity-based -- see
+    app.engines.surplus for the definitions and their limits.
 
-    engine_rows = surplus_rows(db, statuses=statuses, profiles=profiles)
-
-    rows_out: list[SurplusRowOut] = []
-    identity_ok = True
-    for r in engine_rows:
-        if abs(r.on_hand - (r.allocated + r.surplus + r.obsolete)) > 1e-6:
-            identity_ok = False
-        p = db.get(Product, r.product_id)
-        rows_out.append(
-            SurplusRowOut(
-                product=p.name if p is not None else r.product_id,
-                unit=r.unit.value,
-                on_hand=r.on_hand,
-                allocated=r.allocated,
-                surplus=r.surplus,
-                obsolete=r.obsolete,
-            )
+    `status` / `profile` vary the demand scope the allocation counts against
+    (default: the platform's coverage scope). A non-default scope runs inside
+    a read-only recompute (scoped_verdicts) and is labelled as such in the
+    payload -- widening to Planned/Budgeted shows how much of today's surplus
+    the future programme would absorb."""
+    # An unknown BU id is a 404, not an empty 200: an empty surplus report
+    # reads as "no idle steel", which is a claim, not an absence of one.
+    if business_unit_id is not None and db.get(BusinessUnit, business_unit_id) is None:
+        raise HTTPException(status_code=404, detail="Business Unit not found")
+    status_set = set(status) if status else None
+    profile_set = set(profile) if profile else None
+    with scoped_verdicts(db, status_set, profile_set) as (
+        scope_is_default,
+        skipped_customers,
+    ):
+        report = surplus_report(db, business_unit_id=business_unit_id)
+        applied_status = sorted(
+            s.value for s in (status_set or effective_status_filter(db))
         )
+        applied_profile = sorted(
+            p.value for p in (profile_set or effective_profile_filter(db))
+        )
+    out = SurplusReportOut.model_validate(report, from_attributes=True)
+    out.status_scope = applied_status
+    out.profile_scope = applied_profile
+    out.scope_is_default = scope_is_default
+    out.skipped_customers = list(skipped_customers)
+    return out
 
-    totals_by_unit: dict[str, SurplusRowOut] = {}
-    for r in engine_rows:
-        unit = r.unit.value
-        if unit not in totals_by_unit:
-            totals_by_unit[unit] = SurplusRowOut(
-                product="__total__", unit=unit, on_hand=0.0, allocated=0.0, surplus=0.0, obsolete=0.0
-            )
-        agg = totals_by_unit[unit]
-        agg.on_hand += r.on_hand
-        agg.allocated += r.allocated
-        agg.surplus += r.surplus
-        agg.obsolete += r.obsolete
-        if abs(agg.on_hand - (agg.allocated + agg.surplus + agg.obsolete)) > 1e-6:
-            identity_ok = False
-
-    return SurplusOut(
-        rows=rows_out,
-        totals_by_unit=totals_by_unit,
-        identity_ok=identity_ok,
-        scope=ScopeOut(statuses=sorted(statuses), profiles=sorted(profiles)),
-        scope_is_default=scope_is_default,
-        warning=None if scope_is_default else SCOPE_OVERRIDE_WARNING,
-    )
