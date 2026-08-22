@@ -190,22 +190,36 @@ if _STATIC_DIR.is_dir():
     # the scenario's JSON -- but the SPA's own fetch() of the very same path
     # must still reach the API. The discriminator is the Accept header: browser
     # NAVIGATION asks for text/html first; the client's fetch() calls send
-    # `*/*`. Only paths in this list are intercepted, so download links
-    # (/mrp/export, .../template -- <a href> navigations that DO want a file
-    # with an HTML-first Accept header) pass through untouched.
+    # `*/*`.
     #
-    # KEEP IN SYNC with the <Routes> table in frontend/src/main.tsx.
-    _SPA_ROUTES = re.compile(
-        r"^/($|coverage$|executive$|admin$|products$|analysis/sharing$"
-        r"|customer-owned-inventory$|company-inventory$"
-        r"|demand$|demand/import$|mrp$|mrp/by-item/[^/]+$"
-        r"|mrp/order-requirements$|surplus$|approvals$"
-        # Bare /wells is here for URL-TRIMMING, not because the SPA has a route
-        # there: a user cutting /wells/<id> back to /wells must land in the app
-        # (its not-found screen, with the nav) rather than on a bare JSON
-        # "Not authenticated" dead end (QA 2026-08-14).
-        r"|wells$|wells/[^/]+$|scenarios$|scenarios/[^/]+$"
-        r"|demand-lines/[^/]+/substitution$)"
+    # THE RULE IS AN EXEMPTION LIST, NOT A ROUTE LIST
+    # -----------------------------------------------
+    # This used to be a regex enumerating every client route, carrying a "KEEP
+    # IN SYNC with the <Routes> table" warning. That sync is a maintenance
+    # hazard that already cost us once: bare /wells was missing from it and a
+    # planner trimming the URL landed on a raw JSON "Not authenticated" dead
+    # end (QA 2026-08-14). A route list must be updated every time a screen is
+    # added, and forgetting is silent.
+    #
+    # Inverted: a browser navigation gets the app shell UNLESS the path is one
+    # of the few that must answer for itself. Adding a screen now needs no
+    # change here at all. The exemptions are stable and few:
+    #
+    #   * the API docs and the health probe -- navigable on purpose
+    #   * THE FILE DOWNLOADS. Every one of them is an <a href> navigation, so
+    #     it arrives with an HTML-first Accept header and would otherwise be
+    #     handed the shell instead of the spreadsheet. They all end in
+    #     /template or /export, which is a far more durable pattern than a
+    #     per-route list -- but if a download is ever added at some other
+    #     shape, it belongs here. (This is the hazard in the sibling
+    #     implementation's version of this middleware, which intercepts every
+    #     HTML-accepting navigation and would swallow its own downloads.)
+    #
+    # A real file under the build (favicon, vite.svg) is left alone too, so a
+    # direct link to an asset still serves the asset.
+    _NAVIGATION_PASSTHROUGH = re.compile(
+        r"^/(health|docs|redoc|openapi\.json|docs/oauth2-redirect)$"
+        r"|/(template|export)$"
     )
 
     # index.html responses for API-colliding paths MUST NOT enter the browser's
@@ -216,12 +230,23 @@ if _STATIC_DIR.is_dir():
     # the real contract; `no-store` closes the caches that ignore Vary.
     _SPA_INDEX_HEADERS = {"Cache-Control": "no-store", "Vary": "Accept"}
 
+    def _is_build_file(path: str) -> bool:
+        """True when `path` names a real file inside the build directory."""
+        candidate = _STATIC_DIR / path.lstrip("/")
+        try:
+            resolved = candidate.resolve()
+        except OSError:
+            return False
+        return candidate.is_file() and _STATIC_DIR in resolved.parents
+
     @app.middleware("http")
     async def _spa_navigation(request: Request, call_next):
+        path = request.url.path
         if (
             request.method == "GET"
-            and _SPA_ROUTES.match(request.url.path)
             and request.headers.get("accept", "").startswith("text/html")
+            and not _NAVIGATION_PASSTHROUGH.search(path)
+            and not _is_build_file(path)
         ):
             return FileResponse(
                 _STATIC_DIR / "index.html", headers=_SPA_INDEX_HEADERS

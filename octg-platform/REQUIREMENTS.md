@@ -1,7 +1,7 @@
 # OCTG Supply Readiness Platform — Requirements (consolidated, as of 2026-08)
 
 A single-page restatement of the original requirements plus the product-owner rulings made
-during development, grounded in the current implementation (19 screens, 650 tests, deployed
+during development, grounded in the current implementation (19 screens, 666 tests, deployed
 on Render). Implementation handover detail lives in `../HANDOFF.md`; deliberate compromises
 in `../MVP_COMPROMISES.md`.
 
@@ -142,6 +142,12 @@ Cross-cutting rules settled by rulings during development:
 - **Home Dashboard**: KPI band, Demand changes (linked to wells), and a **Pending approvals
   card defined as a union** (all undecided requests + pre-request PendingApproval-verdict
   lines)
+- **SPA navigation**: several client routes share a path with an API route. A browser
+  navigation (HTML-first `Accept`) is answered with the app shell; the SPA's own
+  `fetch` on the same URL still reaches the API, and the response carries
+  `Vary: Accept` plus `no-store` so a cache cannot serve one as the other. The rule is
+  an exemption list — the API docs, the health probe, and the `/template` and `/export`
+  downloads — so adding a screen needs no server change
 - Every screen: Freshness (fetched time + Refresh), errors keep the currently displayed
   data, a 404 page, breadcrumbs (never showing a UUID while loading)
 - **User manual**: `/manual.html` (no login required), with screenshots, updated with every
