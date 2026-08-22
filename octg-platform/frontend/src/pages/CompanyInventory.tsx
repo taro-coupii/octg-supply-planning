@@ -157,7 +157,7 @@ export default function CompanyInventory() {
                     <tr key={row.id}>
                       <td>{nameOf(businessUnits, row.business_unit_id)}</td>
                       <td>{nameOf(products, row.product_id)}</td>
-                      <td>
+                      <td className="num">
                         {row.source_system === "oracle" ? (
                           row.quantity
                         ) : (
@@ -251,7 +251,7 @@ export default function CompanyInventory() {
                     <td>{nameOf(businessUnits, row.business_unit_id)}</td>
                     <td>{nameOf(products, row.product_id)}</td>
                     <td>{nameOf(customers, row.customer_id)}</td>
-                    <td>{row.quantity}</td>
+                    <td className="num">{row.quantity}</td>
                     <td>{row.unit}</td>
                     <td>{row.reference ?? "—"}</td>
                   </tr>
@@ -283,9 +283,9 @@ export default function CompanyInventory() {
                     <tr key={row.id}>
                       <td>{nameOf(businessUnits, row.business_unit_id)}</td>
                       <td>{nameOf(products, row.product_id)}</td>
-                      <td>{row.quantity}</td>
+                      <td className="num">{row.quantity}</td>
                       <td>{row.unit}</td>
-                      <td>{row.expected_date}</td>
+                      <td className="num">{row.expected_date}</td>
                       <td>{row.booking_status}</td>
                     </tr>
                   ))}
@@ -312,7 +312,7 @@ export default function CompanyInventory() {
                     <tr key={row.id}>
                       <td>{nameOf(businessUnits, row.business_unit_id)}</td>
                       <td>{nameOf(products, row.product_id)}</td>
-                      <td>{row.quantity}</td>
+                      <td className="num">{row.quantity}</td>
                       <td>{row.unit}</td>
                       <td>{row.booking_status}</td>
                     </tr>

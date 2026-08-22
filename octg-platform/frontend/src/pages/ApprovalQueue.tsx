@@ -120,7 +120,7 @@ export default function ApprovalQueue() {
                     <td>{a.customer_name}</td>
                     <td>{a.well_name}</td>
                     <td>{a.product_name}</td>
-                    <td>{a.requested_at}</td>
+                    <td className="num">{a.requested_at}</td>
                     {tab === "Pending" ? (
                       <>
                         <td>
@@ -152,7 +152,7 @@ export default function ApprovalQueue() {
                         </td>
                       </>
                     ) : (
-                      <td>{a.decided_at ?? "—"}</td>
+                      <td className="num">{a.decided_at ?? "—"}</td>
                     )}
                   </tr>
                 );

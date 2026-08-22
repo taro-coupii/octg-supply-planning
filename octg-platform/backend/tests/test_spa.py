@@ -93,3 +93,47 @@ def test_deep_encoded_traversal_never_serves_outside_file(tmp_path):
     resp = client.get("/a/b/%2e%2e/%2e%2e/%2e%2e/outside/secret.txt")
     assert resp.status_code == 200
     assert sentinel.read_text() not in resp.text
+
+
+HTML_ACCEPT = {"Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"}
+
+
+def test_browser_navigation_on_api_path_gets_the_app_shell(tmp_path):
+    """Client routes that share a path with an API route must still open.
+
+    /coverage, /scenarios, /analysis/sharing and friends are both screens and
+    endpoints; a browser opening or reloading one used to receive raw JSON.
+    """
+    client = _make_app(tmp_path)
+    resp = client.get("/api-route", headers=HTML_ACCEPT)
+    assert resp.status_code == 200
+    assert "SPA-SHELL" in resp.text
+    assert resp.headers["cache-control"] == "no-store"
+
+
+def test_fetch_on_api_path_still_reaches_the_api(tmp_path):
+    client = _make_app(tmp_path)
+    assert client.get("/api-route", headers={"Accept": "application/json"}).json() == {"ok": True}
+    # TestClient's default Accept (*/*) must also pass through untouched.
+    assert client.get("/api-route").json() == {"ok": True}
+
+
+def test_browser_navigation_still_serves_real_static_files(tmp_path):
+    client = _make_app(tmp_path)
+    assert client.get("/favicon.svg", headers=HTML_ACCEPT).text == "<svg/>"
+
+
+def test_browser_navigation_on_client_route_gets_the_app_shell(tmp_path):
+    client = _make_app(tmp_path)
+    resp = client.get("/coverage", headers=HTML_ACCEPT)
+    assert resp.status_code == 200
+    assert "SPA-SHELL" in resp.text
+
+
+def test_traversal_still_blocked_for_browser_navigation(tmp_path):
+    outside = tmp_path.parent / "outside-secret.txt"
+    outside.write_text("TOP-SECRET")
+    client = _make_app(tmp_path)
+    for path in ("/../outside-secret.txt", "/%2e%2e/outside-secret.txt"):
+        resp = client.get(path, headers=HTML_ACCEPT)
+        assert "TOP-SECRET" not in resp.text

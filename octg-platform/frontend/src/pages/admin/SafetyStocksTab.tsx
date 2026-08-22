@@ -82,7 +82,7 @@ export default function SafetyStocksTab({ businessUnits, products }: { businessU
               <tr key={r.id}>
                 <td>{name(businessUnits, r.business_unit_id)}</td>
                 <td>{name(products, r.product_id)}</td>
-                <td>{r.quantity}</td>
+                <td className="num">{r.quantity}</td>
                 <td>{r.unit}</td>
                 <td>
                   <ConfirmButton label="Clear (unset)" armedLabel="Confirm?" onConfirm={() => clear(r)} />

@@ -41,7 +41,7 @@ function QtyByUnit({ qty }: { qty: Record<string, number> }) {
     <>
       {units.map((u) => (
         <div key={u}>
-          {qty[u]} {u}
+          <span className="num">{qty[u]}</span> {u}
         </div>
       ))}
     </>
@@ -224,8 +224,8 @@ export default function DemandImport() {
                       {current.conflicts.map((c) => (
                         <tr key={c.well_name}>
                           <td>{c.well_name}</td>
-                          <td>{c.existing_line_count}</td>
-                          <td>{c.staged_line_count}</td>
+                          <td className="num">{c.existing_line_count}</td>
+                          <td className="num">{c.staged_line_count}</td>
                           <td>
                             <QtyByUnit qty={c.existing_qty_by_unit} />
                           </td>

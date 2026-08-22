@@ -1,5 +1,9 @@
-import { verdictClass, verdictLabel } from "../lib/verdict";
+import { verdictClass, verdictLabel, verdictText } from "../lib/verdict";
 
 export default function VerdictChip({ verdict }: { verdict: string | null | undefined }) {
-  return <span className={verdictClass(verdict)}>{verdictLabel(verdict)}</span>;
+  return (
+    <span className={verdictClass(verdict)} title={verdictLabel(verdict)}>
+      {verdictText(verdict)}
+    </span>
+  );
 }

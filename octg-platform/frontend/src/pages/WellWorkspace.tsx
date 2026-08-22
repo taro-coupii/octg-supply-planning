@@ -54,6 +54,15 @@ function isSubstitutionAction(action: string): boolean {
   return action.toLowerCase().includes("substitution");
 }
 
+// Revision "source" values are raw underscored enums (e.g. "status_change") —
+// never printed at a person verbatim.
+function sourceText(source: string): string {
+  return source
+    .split("_")
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(" ");
+}
+
 // §3-8: mixed-unit aggregates render per unit, never summed to a scalar.
 function qtyByUnit(lines: DemandLineDetail[]): Record<string, number> {
   const result: Record<string, number> = {};
@@ -156,9 +165,9 @@ export default function WellWorkspace() {
                   {well.lines.map((l) => (
                     <tr key={l.id}>
                       <td>{nameOf(products, l.product_id)}</td>
-                      <td>{l.quantity}</td>
+                      <td className="num">{l.quantity}</td>
                       <td>{l.unit}</td>
-                      <td>{l.ros_date}</td>
+                      <td className="num">{l.ros_date}</td>
                       <td>{l.profile}</td>
                       <td>
                         <VerdictChip verdict={l.coverage?.verdict} />
@@ -181,7 +190,7 @@ export default function WellWorkspace() {
                     <td>
                       <strong>Total by unit</strong>
                     </td>
-                    <td colSpan={7}>
+                    <td className="num" colSpan={7}>
                       {Object.keys(summary).length === 0
                         ? "—"
                         : Object.keys(summary)
@@ -208,9 +217,9 @@ export default function WellWorkspace() {
                 <tbody>
                   {well.revisions.map((r) => (
                     <tr key={r.id}>
-                      <td>{r.revision_no}</td>
-                      <td>{r.applied_at}</td>
-                      <td>{r.source}</td>
+                      <td className="num">{r.revision_no}</td>
+                      <td className="num">{r.applied_at}</td>
+                      <td>{sourceText(r.source)}</td>
                       <td>{r.summary}</td>
                     </tr>
                   ))}

@@ -3,7 +3,9 @@ import { Link, useSearchParams } from "react-router-dom";
 import Breadcrumbs from "../components/Breadcrumbs";
 import Freshness from "../components/Freshness";
 import VerdictChip from "../components/VerdictChip";
-import { VERDICTS } from "../lib/verdict";
+import { VERDICTS, verdictText } from "../lib/verdict";
+import CoverageBand from "../components/CoverageBand";
+import { formatStampRange } from "../lib/datetime";
 import { ApiError, apiGet, apiSend } from "../lib/api";
 import { writeParam } from "../lib/urlState";
 import { errorMessage } from "./admin/shared";
@@ -36,6 +38,24 @@ type CoverageGrid = {
 type RecomputeResult = { computed: number; skipped_customers: SkippedCustomer[] };
 
 // NotEvaluated is a distinct rollup bucket (never merged with 0 or Covered).
+// A row's leading paint band carries its worst verdict. Red is reserved for
+// Unrecoverable (steel physically absent); amber covers the states that are
+// waiting on a human. The two are never merged (spec §3).
+function bandClass(worst: string | null): string {
+  switch (worst) {
+    case "Unrecoverable":
+      return "band-bad";
+    case "Uncovered":
+    case "PendingApproval":
+      return "band-warn";
+    case "Covered":
+    case "CoveredViaSubstitute":
+      return "band-ok";
+    default:
+      return "band-neutral";
+  }
+}
+
 const ROLLUP_KEYS = [...VERDICTS, "NotEvaluated"] as const;
 
 export default function CoverageWorkspace() {
@@ -113,9 +133,9 @@ export default function CoverageWorkspace() {
           </p>
         )}
 
-        <fieldset>
-          <legend>Filters</legend>
-          <div className="admin-add-row">
+        <div className="filters">
+          <label>
+            Customer
             <select value={customerFilter} onChange={(e) => setFilter("customer", e.target.value)}>
               <option value="">All customers</option>
               {(data?.customers ?? []).map((c) => (
@@ -124,32 +144,38 @@ export default function CoverageWorkspace() {
                 </option>
               ))}
             </select>
+          </label>
+          <label>
+            Worst verdict
             <select value={worstVerdictFilter} onChange={(e) => setFilter("worst_verdict", e.target.value)}>
               <option value="">All verdicts</option>
               {ROLLUP_KEYS.map((v) => (
                 <option key={v} value={v}>
-                  {v}
+                  {verdictText(v)}
                 </option>
               ))}
             </select>
+          </label>
+          <label>
+            Search
             <input
               placeholder="Search well or customer"
               value={search}
               onChange={(e) => setFilter("q", e.target.value)}
             />
-            <button type="button" disabled={busy} onClick={recompute}>
-              {busy ? "Recomputing…" : "Recompute"}
-            </button>
-          </div>
-        </fieldset>
+          </label>
+          <button type="button" disabled={busy} onClick={recompute}>
+            {busy ? "Recomputing…" : "Recompute"}
+          </button>
+        </div>
 
         <p className="hint">
           Computed at:{" "}
-          {data?.computed_at_min && data?.computed_at_max
-            ? data.computed_at_min === data.computed_at_max
-              ? data.computed_at_min
-              : `${data.computed_at_min} – ${data.computed_at_max}`
-            : "—"}
+          <span className="num">
+            {data?.computed_at_min && data?.computed_at_max
+              ? formatStampRange(data.computed_at_min, data.computed_at_max)
+              : "—"}
+          </span>
         </p>
 
         <div className="table-scroll">
@@ -172,17 +198,15 @@ export default function CoverageWorkspace() {
             )}
             {rows.map((r) =>
               r.wells.map((w) => (
-                <tr key={w.id}>
+                <tr key={w.id} className={bandClass(w.worst_verdict)}>
                   <td>{r.customer.name}</td>
                   <td>
                     <Link to={`/wells/${w.id}`}>{w.name}</Link>
                   </td>
                   <td>{w.status}</td>
-                  <td>{w.line_count}</td>
+                  <td className="num">{w.line_count}</td>
                   <td>
-                    {ROLLUP_KEYS.filter((k) => (w.verdict_rollup[k] ?? 0) > 0)
-                      .map((k) => `${k}: ${w.verdict_rollup[k]}`)
-                      .join(", ") || "—"}
+                    <CoverageBand rollup={w.verdict_rollup} />
                   </td>
                   <td>
                     <VerdictChip verdict={w.worst_verdict} />

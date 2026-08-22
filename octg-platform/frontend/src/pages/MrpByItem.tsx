@@ -104,27 +104,31 @@ export default function MrpByItem() {
 
         {error && <p className="inline-error">{error}</p>}
 
-        <fieldset>
-          <legend>Horizon (months)</legend>
-          <select value={horizon} onChange={(e) => setHorizon(Number(e.target.value))}>
-            {HORIZONS.map((h) => (
-              <option key={h} value={h}>
-                {h}
-              </option>
-            ))}
-          </select>
-        </fieldset>
+        <div className="filters">
+          <label>
+            Horizon (months)
+            <select value={horizon} onChange={(e) => setHorizon(Number(e.target.value))}>
+              {HORIZONS.map((h) => (
+                <option key={h} value={h}>
+                  {h}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
 
         {data && (
           <>
             <p>
-              Runout — baseline: <strong>{data.row.runout_months.baseline ?? "—"}</strong> &nbsp; with
-              recommended: <strong>{data.row.runout_months.with_recommended ?? "—"}</strong> &nbsp; on order:{" "}
-              <strong>{data.row.runout_months.on_order ?? "—"}</strong>
+              Runout — baseline: <strong className="num">{data.row.runout_months.baseline ?? "—"}</strong> &nbsp; with
+              recommended: <strong className="num">{data.row.runout_months.with_recommended ?? "—"}</strong> &nbsp; on order:{" "}
+              <strong className="num">{data.row.runout_months.on_order ?? "—"}</strong>
             </p>
             <p className="hint">
               On order (undated, not in monthly ledger):{" "}
-              {data.row.on_order_undated ? `${data.row.on_order_undated} ${data.row.unit}` : "—"}
+              <span className="num">
+                {data.row.on_order_undated ? `${data.row.on_order_undated} ${data.row.unit}` : "—"}
+              </span>
             </p>
 
             <div className="table-scroll">
@@ -149,14 +153,14 @@ export default function MrpByItem() {
                 )}
                 {data.row.months.map((m) => (
                   <tr key={m.month}>
-                    <td>{m.month}</td>
-                    <td>{m.opening.company}</td>
-                    <td>{m.opening.owned}</td>
-                    <td className="receipt-booked">{m.receipts_booked}</td>
-                    <td className="receipt-recommended">{m.receipts_recommended}</td>
-                    <td>{m.issues}</td>
-                    <td>{m.closing.company}</td>
-                    <td>{m.closing.owned}</td>
+                    <td className="num">{m.month}</td>
+                    <td className="num">{m.opening.company}</td>
+                    <td className="num">{m.opening.owned}</td>
+                    <td className="receipt-booked num">{m.receipts_booked}</td>
+                    <td className="receipt-recommended num">{m.receipts_recommended}</td>
+                    <td className="num">{m.issues}</td>
+                    <td className="num">{m.closing.company}</td>
+                    <td className="num">{m.closing.owned}</td>
                   </tr>
                 ))}
               </tbody>
@@ -186,9 +190,9 @@ export default function MrpByItem() {
                       </td>
                       <td>{customers.find((c) => c.id === l.customer_id)?.name ?? "…"}</td>
                       <td>
-                        {l.quantity} {l.unit}
+                        <span className="num">{l.quantity}</span> {l.unit}
                       </td>
-                      <td>{l.ros_date}</td>
+                      <td className="num">{l.ros_date}</td>
                       <td>{l.profile}</td>
                     </tr>
                   ))}

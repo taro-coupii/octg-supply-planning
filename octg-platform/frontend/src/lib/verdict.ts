@@ -43,3 +43,19 @@ export function blockedClass(blockedBy: string | null | undefined): string {
       return "";
   }
 }
+
+// Screens must never print the raw enum at a person. The verdict is a
+// judgement about steel; say it the way a planner would.
+const VERDICT_TEXT: Record<string, string> = {
+  Covered: "Covered",
+  CoveredViaSubstitute: "Covered via substitute",
+  PendingApproval: "Pending approval",
+  Uncovered: "Uncovered",
+  Unrecoverable: "Unrecoverable",
+  NotEvaluated: "Not evaluated",
+};
+
+export function verdictText(verdict: string | null | undefined): string {
+  const key = verdict ?? "NotEvaluated";
+  return VERDICT_TEXT[key] ?? key;
+}

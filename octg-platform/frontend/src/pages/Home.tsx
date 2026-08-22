@@ -2,6 +2,15 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import Freshness from "../components/Freshness";
 import { apiGet } from "../lib/api";
+import { formatStamp } from "../lib/datetime";
+import VerdictChip from "../components/VerdictChip";
+
+function sourceText(source: string): string {
+  return source
+    .split("_")
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(" ");
+}
 
 type CoverageKpi = {
   rate: number | null;
@@ -80,23 +89,22 @@ export default function Home() {
 
   return (
     <div>
-      <div className="card">
-        <div className="page-header">
-          <h1>OCTG Supply Readiness Platform</h1>
-          <Freshness fetchedAt={fetchedAt} onRefresh={load} />
-        </div>
-        {error && <p className="inline-error">{error}</p>}
-        {!data && !error && <p>Loading…</p>}
+      <div className="page-header">
+        <h1>OCTG Supply Readiness Platform</h1>
+        <Freshness fetchedAt={fetchedAt} onRefresh={load} />
+      </div>
+      {error && <p className="inline-error">{error}</p>}
+      {!data && !error && <p>Loading…</p>}
 
-        {kpi && (
-          <div className="exec-grid">
+      {kpi && (
+        <div className="exec-grid">
             <div className="card">
               <h3>Customers</h3>
-              <p style={{ fontSize: 28, margin: 0 }}>{kpi.customer_count}</p>
+              <p className="kpi-value">{kpi.customer_count}</p>
             </div>
             <div className="card">
               <h3>Wells</h3>
-              <p style={{ fontSize: 28, margin: 0 }}>{wellTotal}</p>
+              <p className="kpi-value">{wellTotal}</p>
               <p className="hint">
                 {Object.entries(wellCounts)
                   .map(([status, count]) => `${status}: ${count}`)
@@ -105,7 +113,7 @@ export default function Home() {
             </div>
             <div className="card">
               <h3>Coverage rate</h3>
-              <p style={{ fontSize: 28, margin: 0 }}>{pct(kpi.coverage.rate)}</p>
+              <p className="kpi-value">{pct(kpi.coverage.rate)}</p>
               <p className="hint">
                 {kpi.coverage.covered_count} / {kpi.coverage.evaluated_count} evaluated
                 {kpi.coverage.not_evaluated_count > 0
@@ -115,11 +123,10 @@ export default function Home() {
             </div>
             <div className="card">
               <h3>Pending approvals</h3>
-              <p style={{ fontSize: 28, margin: 0 }}>{kpi.pending_approvals_count}</p>
+              <p className="kpi-value">{kpi.pending_approvals_count}</p>
             </div>
-          </div>
-        )}
-      </div>
+        </div>
+      )}
 
       {data && (
         <div className="exec-grid">
@@ -133,11 +140,11 @@ export default function Home() {
               <tbody>
                 {data.demand_changes.map((c) => (
                   <tr key={c.id}>
-                    <td>{new Date(c.applied_at).toLocaleString()}</td>
+                    <td className="num">{formatStamp(c.applied_at)}</td>
                     <td>
                       <Link to={`/wells/${c.well_id}`}>{c.well_name}</Link>
                     </td>
-                    <td>{c.source}</td>
+                    <td>{sourceText(c.source)}</td>
                     <td>{c.summary}</td>
                   </tr>
                 ))}
@@ -184,8 +191,11 @@ export default function Home() {
                       <Link to={`/wells/${w.well_id}`}>{w.well_name}</Link>
                     </td>
                     <td>{w.customer_name}</td>
-                    <td>{w.worst_verdict}</td>
-                    <td>{w.line_count} line(s)</td>
+                    <td><VerdictChip verdict={w.worst_verdict} /></td>
+                    <td>
+                      <span className="num">{w.line_count}</span>{" "}
+                      {w.line_count === 1 ? "line" : "lines"}
+                    </td>
                   </tr>
                 ))}
               </tbody>

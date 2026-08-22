@@ -93,8 +93,8 @@ export default function ScenarioList() {
                   <td>
                     <span className={`scenario-chip scenario-${r.status.toLowerCase()}`}>{r.status}</span>
                   </td>
-                  <td>{new Date(r.created_at).toLocaleString()}</td>
-                  <td>{r.applied_at ? new Date(r.applied_at).toLocaleString() : "—"}</td>
+                  <td className="num">{new Date(r.created_at).toLocaleString()}</td>
+                  <td className="num">{r.applied_at ? new Date(r.applied_at).toLocaleString() : "—"}</td>
                 </tr>
               ))}
             </tbody>

@@ -58,7 +58,7 @@ Alembic migrations are added incrementally per stage (not one bulk initial schem
 
 ### Frontend
 
-- A full set of design tokens under `:root` in `index.css` (`--rail`-series dark navy, pastel base, semantic colors `--ok/--bad/--warn/--unmodelled`)
+- A full set of design tokens under `:root` in `index.css`. **The visual language was replaced on 2026-08-22** — the current system is defined by `2026-08-22-octg-visual-system.md` (instrument panel / paint bands / IBM Plex, zinc-grey ground, petrol accent). The meanings of the semantic colors `--ok/--bad/--warn/--unmodelled` and the rule that red and amber are never merged are unchanged.
 - No dark mode (explicit requirement). Supports reduced-motion
 - SPA routing with a 404 catch-all. Breadcrumbs never show a UUID while loading
 - Filters, sort, tabs, and view toggles persist in the URL (§3 cross-cutting rule)

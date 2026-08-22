@@ -92,9 +92,9 @@ export default function MaterialOrderReq() {
 
         {error && <p className="inline-error">{error}</p>}
 
-        <div className="admin-add-row">
-          <fieldset>
-            <legend>Horizon (months)</legend>
+        <div className="filters">
+          <label>
+            Horizon (months)
             <select value={horizon} onChange={(e) => setHorizon(Number(e.target.value))}>
               {HORIZONS.map((h) => (
                 <option key={h} value={h}>
@@ -102,9 +102,9 @@ export default function MaterialOrderReq() {
                 </option>
               ))}
             </select>
-          </fieldset>
-          <fieldset>
-            <legend>Customer</legend>
+          </label>
+          <label>
+            Customer
             <select value={customerId} onChange={(e) => setCustomer(e.target.value)}>
               <option value="">All customers</option>
               {customers.map((c) => (
@@ -113,18 +113,23 @@ export default function MaterialOrderReq() {
                 </option>
               ))}
             </select>
-          </fieldset>
+          </label>
         </div>
 
-        <p className="mor-legend">
-          Legend: cell shade reflects closing balance sign only —{" "}
-          <span className="mor-cell mor-cell-ok">ok</span> (balance ≥ 0),{" "}
-          <span className="mor-cell mor-cell-deficit">deficit</span> (balance &lt; 0). Markers on a month cell —
-          ▲ order deadline, ▼ physical runout (red), ▽ safety-stock breach (amber) — safety-stock status is shown
-          only by the ▽ marker, never by cell color. When the order deadline falls before the visible strip (the
-          order should already have been placed), it cannot land on a cell — it is shown instead as an{" "}
-          <span className="overdue-strip-chip">▲ overdue</span> chip in the product header.
-        </p>
+        <div className="legend">
+          <span>
+            <span className="legend-swatch legend-swatch-ok" /> Closing balance ≥ 0
+          </span>
+          <span>
+            <span className="legend-swatch legend-swatch-deficit" /> Closing balance &lt; 0
+          </span>
+          <span>▲ Order deadline</span>
+          <span>▼ Physical runout</span>
+          <span>▽ Safety-stock breach (not cell colour)</span>
+          <span>
+            <span className="overdue-strip-chip">▲ overdue</span> = deadline before visible strip
+          </span>
+        </div>
 
         {data?.unavailable_reason && <p className="inline-error">{data.unavailable_reason}</p>}
 
@@ -167,8 +172,8 @@ export default function MaterialOrderReq() {
                           {marker === "deadline" && <span className="mor-marker mor-marker-deadline">▲</span>}
                           {marker === "runout" && <span className="mor-marker mor-marker-runout">▼</span>}
                           {marker === "safety" && <span className="mor-marker mor-marker-safety">▽</span>}
-                          <div>{pt.month}</div>
-                          <div>{pt.closing_balance}</div>
+                          <div className="num">{pt.month}</div>
+                          <div className="num">{pt.closing_balance}</div>
                         </div>
                       );
                     })}
@@ -192,11 +197,11 @@ export default function MaterialOrderReq() {
                       )}
                       {row.requirements.map((r) => (
                         <tr key={r.need_month}>
-                          <td>{r.need_month}</td>
+                          <td className="num">{r.need_month}</td>
                           <td>
-                            {r.qty} {r.unit}
+                            <span className="num">{r.qty}</span> {r.unit}
                           </td>
-                          <td>{r.ex_mill_month}</td>
+                          <td className="num">{r.ex_mill_month}</td>
                           <td>{r.overdue && <span className="overdue-chip">Overdue</span>}</td>
                         </tr>
                       ))}

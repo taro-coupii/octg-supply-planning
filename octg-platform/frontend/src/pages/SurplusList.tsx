@@ -120,12 +120,12 @@ export default function SurplusList() {
                 <tr key={r.product}>
                   <td>{r.product}</td>
                   <td>
-                    {r.on_hand} {r.unit}
+                    <span className="num">{r.on_hand}</span> {r.unit}
                   </td>
                   <td>
-                    <span className="surplus-dot surplus-dot-ok" /> Allocated {r.allocated} ·{" "}
-                    <span className="surplus-dot surplus-dot-warn" /> Surplus {r.surplus} ·{" "}
-                    <span className="surplus-dot surplus-dot-bad" /> Obsolete {r.obsolete}
+                    <span className="surplus-dot surplus-dot-ok" /> Allocated <span className="num">{r.allocated}</span> ·{" "}
+                    <span className="surplus-dot surplus-dot-warn" /> Surplus <span className="num">{r.surplus}</span> ·{" "}
+                    <span className="surplus-dot surplus-dot-bad" /> Obsolete <span className="num">{r.obsolete}</span>
                   </td>
                 </tr>
               ))}

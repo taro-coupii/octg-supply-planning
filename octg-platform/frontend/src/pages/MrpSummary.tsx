@@ -91,9 +91,9 @@ export default function MrpSummary() {
 
         {error && <p className="inline-error">{error}</p>}
 
-        <div className="admin-add-row">
-          <fieldset>
-            <legend>Horizon (months)</legend>
+        <div className="filters">
+          <label>
+            Horizon (months)
             <select value={horizon} onChange={(e) => setHorizon(Number(e.target.value))}>
               {HORIZONS.map((h) => (
                 <option key={h} value={h}>
@@ -101,7 +101,7 @@ export default function MrpSummary() {
                 </option>
               ))}
             </select>
-          </fieldset>
+          </label>
           <button type="button" className="confirm-btn" onClick={exportXlsx} disabled={exporting}>
             {exporting ? "Exporting…" : "Export xlsx"}
           </button>
@@ -132,10 +132,10 @@ export default function MrpSummary() {
                     <Link to={`/mrp/items/${row.product}`}>{productName(row.product)}</Link>
                   </td>
                   <td>{row.unit}</td>
-                  <td>{row.runout_months.baseline ?? "—"}</td>
-                  <td>{row.runout_months.with_recommended ?? "—"}</td>
-                  <td>{row.runout_months.on_order ?? "—"}</td>
-                  <td>{row.on_order_undated ? `${row.on_order_undated} ${row.unit}` : "—"}</td>
+                  <td className="num">{row.runout_months.baseline ?? "—"}</td>
+                  <td className="num">{row.runout_months.with_recommended ?? "—"}</td>
+                  <td className="num">{row.runout_months.on_order ?? "—"}</td>
+                  <td className="num">{row.on_order_undated ? `${row.on_order_undated} ${row.unit}` : "—"}</td>
                 </tr>
               ))}
             </tbody>

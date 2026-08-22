@@ -83,17 +83,19 @@ export default function SharingAnalysis() {
 
         {error && <p className="inline-error">{error}</p>}
 
-        <fieldset>
-          <legend>Customer</legend>
-          <select value={customerId} onChange={(e) => setCustomer(e.target.value)}>
-            <option value="">Select a customer…</option>
-            {customers.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.name}
-              </option>
-            ))}
-          </select>
-        </fieldset>
+        <div className="filters">
+          <label>
+            Customer
+            <select value={customerId} onChange={(e) => setCustomer(e.target.value)}>
+              <option value="">Select a customer…</option>
+              {customers.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
 
         {!customerId && <p className="hint">Select a customer to see their uncovered/unrecoverable lines.</p>}
 
@@ -115,7 +117,7 @@ export default function SharingAnalysis() {
               {entries.map((entry) => (
                 <tr key={entry.line.id}>
                   <td>
-                    {entry.line.product_id} — {entry.line.quantity} {entry.line.unit}
+                    {entry.line.product_id} — <span className="num">{entry.line.quantity}</span> {entry.line.unit}
                   </td>
                   <td>
                     <VerdictChip verdict={entry.official_verdict} />
@@ -137,7 +139,7 @@ export default function SharingAnalysis() {
                             <tr key={p.customer_id}>
                               <td>{p.customer_name}</td>
                               <td>
-                                {p.releasable_qty_by_unit} {entry.line.unit}
+                                <span className="num">{p.releasable_qty_by_unit}</span> {entry.line.unit}
                               </td>
                               <td>{p.would_cover ? "✓" : "—"}</td>
                             </tr>

@@ -5,6 +5,7 @@ import ConfirmButton from "../components/ConfirmButton";
 import Freshness from "../components/Freshness";
 import { ApiError, apiGet, apiSend } from "../lib/api";
 import { DEMAND_STATUSES } from "../lib/enums";
+import { verdictText } from "../lib/verdict";
 import { errorMessage, type Customer } from "./admin/shared";
 
 type OverrideOut = {
@@ -115,10 +116,10 @@ function CoverageComparison({ preview }: { preview: CoveragePreview }) {
           const delta = after - before;
           return (
             <tr key={v} className={delta !== 0 ? "preview-row-changed" : undefined}>
-              <td>{v}</td>
-              <td>{before}</td>
-              <td>{after}</td>
-              <td className={delta !== 0 ? "preview-delta" : undefined}>
+              <td>{verdictText(v)}</td>
+              <td className="num">{before}</td>
+              <td className="num">{after}</td>
+              <td className={`num${delta !== 0 ? " preview-delta" : ""}`}>
                 {delta > 0 ? `+${delta}` : delta}
               </td>
             </tr>
@@ -156,8 +157,8 @@ function MrpComparison({ preview, productName }: { preview: MrpPreview; productN
           return (
             <tr key={key} className={changed ? "preview-row-changed" : undefined}>
               <td>{productName(productId)}</td>
-              <td>{runoutLabel(before?.runout_months)}</td>
-              <td className={changed ? "preview-delta" : undefined}>{runoutLabel(after?.runout_months)}</td>
+              <td className="num">{runoutLabel(before?.runout_months)}</td>
+              <td className={`num${changed ? " preview-delta" : ""}`}>{runoutLabel(after?.runout_months)}</td>
             </tr>
           );
         })}

@@ -155,7 +155,7 @@ export default function ProductWorkspace() {
                   >
                     <td>{p.name}</td>
                     <td>{p.unit_of_measure ?? "—"}</td>
-                    <td>{p.weight_kg ?? "—"}</td>
+                    <td className="num">{p.weight_kg ?? "—"}</td>
                   </tr>
                 ))}
               </tbody>
@@ -165,7 +165,8 @@ export default function ProductWorkspace() {
               <div className="card" style={{ flex: 1, minWidth: "20rem" }}>
                 <h2>{selected.name}</h2>
                 <p>
-                  Unit: {selected.unit_of_measure ?? "—"} &nbsp; Weight: {selected.weight_kg ?? "—"} kg
+                  Unit: {selected.unit_of_measure ?? "—"} &nbsp; Weight:{" "}
+                  <span className="num">{selected.weight_kg ?? "—"}</span> kg
                 </p>
 
                 <h3>Safety stocks</h3>
@@ -183,7 +184,7 @@ export default function ProductWorkspace() {
                       {detailSafetyStocks.map((s) => (
                         <tr key={s.id}>
                           <td>{nameOf(businessUnits, s.business_unit_id)}</td>
-                          <td>{s.quantity}</td>
+                          <td className="num">{s.quantity}</td>
                           <td>{s.unit}</td>
                         </tr>
                       ))}
@@ -206,7 +207,7 @@ export default function ProductWorkspace() {
                       {detailLeadTimes.map((l) => (
                         <tr key={l.id}>
                           <td>{l.business_unit_id ? nameOf(businessUnits, l.business_unit_id) : "(all)"}</td>
-                          <td>{l.months}</td>
+                          <td className="num">{l.months}</td>
                         </tr>
                       ))}
                     </tbody>

@@ -148,7 +148,7 @@ export default function CustomerOwnedInventory() {
               <p className="banner-warn">No data uploaded — 0 is not the same as no data.</p>
             )}
             {data && data.has_uploaded && (
-              <p className="hint">Last uploaded: {data.uploaded_at}</p>
+              <p className="hint">Last uploaded: <span className="num">{data.uploaded_at}</span></p>
             )}
 
             {data && (
@@ -169,7 +169,7 @@ export default function CustomerOwnedInventory() {
                   {data.positions.map((p) => (
                     <tr key={p.id}>
                       <td>{nameOf(products, p.product_id)}</td>
-                      <td>{p.quantity}</td>
+                      <td className="num">{p.quantity}</td>
                       <td>{p.unit}</td>
                     </tr>
                   ))}

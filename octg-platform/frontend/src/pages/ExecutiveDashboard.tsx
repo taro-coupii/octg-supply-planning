@@ -4,22 +4,7 @@ import Freshness from "../components/Freshness";
 import ScopeChecks, { DEFAULT_SCOPE_STATE, scopeToQuery, type ScopeState } from "../components/ScopeChecks";
 import { apiGet } from "../lib/api";
 import { errorMessage } from "./admin/shared";
-
-// Human-readable coverage verdict labels — display-layer only (spec §E-1
-// note: the engine keeps native verdict strings; the map lives here too,
-// independent of the backend's own VERDICT_LABELS, since a raw verdict
-// string like "PendingApproval" is still legible for a fallback).
-const VERDICT_LABELS: Record<string, string> = {
-  Covered: "Covered",
-  CoveredViaSubstitute: "Covered via substitute",
-  PendingApproval: "Pending approval",
-  Uncovered: "Uncovered",
-  Unrecoverable: "Unrecoverable",
-};
-
-function verdictLabel(v: string): string {
-  return VERDICT_LABELS[v] ?? v;
-}
+import { verdictText } from "../lib/verdict";
 
 type Block<T> = {
   available: boolean;
@@ -83,7 +68,7 @@ function NativeBreakdown({ qtyByUnit }: { qtyByUnit: Record<string, number> }) {
         {entries.map(([unit, qty]) => (
           <tr key={unit}>
             <td>{unit}</td>
-            <td>{qty}</td>
+            <td className="num">{qty}</td>
           </tr>
         ))}
       </tbody>
@@ -94,7 +79,7 @@ function NativeBreakdown({ qtyByUnit }: { qtyByUnit: Record<string, number> }) {
 function MtHeadline({ mtTotal, mtIncomplete }: { mtTotal: number; mtIncomplete: boolean }) {
   return (
     <div>
-      <div className="mt-headline">≈ {mtTotal.toFixed(1)} MT</div>
+      <div className="mt-headline">≈ <span className="num">{mtTotal.toFixed(1)}</span> MT</div>
       {mtIncomplete && <p className="hint">Excludes items without weight</p>}
     </div>
   );
@@ -176,12 +161,12 @@ export default function ExecutiveDashboard() {
               <tbody>
                 {data.demand_trend.months.map((m) => (
                   <tr key={m.month}>
-                    <td>{m.month}</td>
-                    <td>
+                    <td className="num">{m.month}</td>
+                    <td className="num">
                       {m.mt_total.toFixed(1)}
                       {m.mt_incomplete && <span title="Excludes items without weight"> *</span>}
                     </td>
-                    <td>
+                    <td className="num">
                       {Object.entries(m.qty_by_unit)
                         .map(([u, q]) => `${q} ${u}`)
                         .join(", ") || "—"}
@@ -204,9 +189,9 @@ export default function ExecutiveDashboard() {
               <tbody>
                 {Object.entries(data.coverage.by_verdict).map(([verdict, v]) => (
                   <tr key={verdict}>
-                    <td>{v.label || verdictLabel(verdict)}</td>
-                    <td>{v.count}</td>
-                    <td>
+                    <td>{v.label || verdictText(verdict)}</td>
+                    <td className="num">{v.count}</td>
+                    <td className="num">
                       {Object.entries(v.qty_by_unit)
                         .map(([u, q]) => `${q} ${u}`)
                         .join(", ") || "—"}
@@ -230,9 +215,9 @@ export default function ExecutiveDashboard() {
                 {data.supply_risk.items.map((it) => (
                   <tr key={it.product_id}>
                     <td>{it.product_name}</td>
-                    <td>{it.runout_month}</td>
+                    <td className="num">{it.runout_month}</td>
                     <td>
-                      {it.opening_total} {it.unit}
+                      <span className="num">{it.opening_total}</span> {it.unit}
                     </td>
                   </tr>
                 ))}
@@ -252,7 +237,7 @@ export default function ExecutiveDashboard() {
                 {Object.entries(data.soft_allocation.by_customer).map(([cid, c]) => (
                   <tr key={cid}>
                     <td>{c.customer_name}</td>
-                    <td>
+                    <td className="num">
                       {Object.entries(c.qty_by_unit)
                         .map(([u, q]) => `${q} ${u}`)
                         .join(", ") || "—"}

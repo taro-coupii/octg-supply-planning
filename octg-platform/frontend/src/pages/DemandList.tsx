@@ -97,9 +97,9 @@ export default function DemandList() {
         </div>
         {error && <p className="inline-error">{error}</p>}
 
-        <fieldset>
-          <legend>Filters</legend>
-          <div className="admin-add-row">
+        <div className="filters">
+          <label>
+            Customer
             <select value={customerId} onChange={(e) => setFilter("customer", e.target.value)}>
               <option value="">All customers</option>
               {customers.map((c) => (
@@ -108,12 +108,18 @@ export default function DemandList() {
                 </option>
               ))}
             </select>
+          </label>
+          <label>
+            Well ID
             <input
               placeholder="Well ID"
               value={wellId}
               onChange={(e) => setFilter("well", e.target.value)}
               style={{ width: "9rem" }}
             />
+          </label>
+          <label>
+            Product
             <select value={productId} onChange={(e) => setFilter("product", e.target.value)}>
               <option value="">All products</option>
               {products.map((p) => (
@@ -122,6 +128,9 @@ export default function DemandList() {
                 </option>
               ))}
             </select>
+          </label>
+          <label>
+            Status
             <select value={status} onChange={(e) => setFilter("status", e.target.value)}>
               <option value="">All statuses</option>
               {DEMAND_STATUSES.map((s) => (
@@ -130,6 +139,9 @@ export default function DemandList() {
                 </option>
               ))}
             </select>
+          </label>
+          <label>
+            Profile
             <select value={profile} onChange={(e) => setFilter("profile", e.target.value)}>
               <option value="">All profiles</option>
               {DEMAND_PROFILES.map((p) => (
@@ -138,15 +150,16 @@ export default function DemandList() {
                 </option>
               ))}
             </select>
-            <label>
-              ROS from{" "}
-              <input type="date" value={rosFrom} onChange={(e) => setFilter("ros_from", e.target.value)} />
-            </label>
-            <label>
-              ROS to <input type="date" value={rosTo} onChange={(e) => setFilter("ros_to", e.target.value)} />
-            </label>
-          </div>
-        </fieldset>
+          </label>
+          <label>
+            ROS from
+            <input type="date" value={rosFrom} onChange={(e) => setFilter("ros_from", e.target.value)} />
+          </label>
+          <label>
+            ROS to
+            <input type="date" value={rosTo} onChange={(e) => setFilter("ros_to", e.target.value)} />
+          </label>
+        </div>
 
         {data && (
           <table className="admin-table">
@@ -175,9 +188,9 @@ export default function DemandList() {
                   <td>{line.customer_name}</td>
                   <td>{line.product_name}</td>
                   <td>
-                    {line.quantity} {line.unit}
+                    <span className="num">{line.quantity}</span> {line.unit}
                   </td>
-                  <td>{line.ros_date}</td>
+                  <td className="num">{line.ros_date}</td>
                   <td>{line.profile}</td>
                   <td>{line.overdue && <span className="banner-warn">Overdue</span>}</td>
                 </tr>
@@ -192,7 +205,8 @@ export default function DemandList() {
               Previous
             </button>
             <span className="hint">
-              Page {data.page} of {totalPages} ({data.total} total)
+              Page <span className="num">{data.page}</span> of <span className="num">{totalPages}</span> (
+              <span className="num">{data.total}</span> total)
             </span>
             <button
               type="button"

@@ -4,7 +4,7 @@ import Breadcrumbs from "../components/Breadcrumbs";
 import ConfirmButton from "../components/ConfirmButton";
 import Freshness from "../components/Freshness";
 import { ApiError, apiGet, apiSend } from "../lib/api";
-import { blockedClass } from "../lib/verdict";
+import { blockedClass, verdictText } from "../lib/verdict";
 import { errorMessage } from "./admin/shared";
 
 type Candidate = {
@@ -116,15 +116,15 @@ export default function SubstitutionWorkspace() {
                   <tr key={c.substitution_id}>
                     <td>{c.to_product}</td>
                     <td>{c.customer_rule_allowed ? "Allowed" : "Not allowed"}</td>
-                    <td>
+                    <td className="num">
                       {Object.keys(c.free_qty_by_unit).length === 0
                         ? "—"
                         : Object.entries(c.free_qty_by_unit)
                             .map(([u, q]) => `${q} ${u}`)
                             .join(", ")}
                     </td>
-                    <td>{c.hard_assigned_qty}</td>
-                    <td>{c.verdict_if_applied}</td>
+                    <td className="num">{c.hard_assigned_qty}</td>
+                    <td>{verdictText(c.verdict_if_applied)}</td>
                     <td>
                       {c.blocked_by ? (
                         <span className={blockedClass(c.blocked_by)}>{blockedText(c.blocked_by)}</span>
