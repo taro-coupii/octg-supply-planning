@@ -1,166 +1,246 @@
-import { useEffect, useState } from "react";
-import { useSearchParams } from "react-router-dom";
-import Breadcrumbs from "../components/Breadcrumbs";
+import { useCallback, useEffect, useState } from "react";
+import { Link } from "react-router-dom";
+import { api, ApprovalQueueRow } from "../api/client";
 import ConfirmButton from "../components/ConfirmButton";
-import Freshness from "../components/Freshness";
-import { ApiError, apiGet, apiSend } from "../lib/api";
-import { errorMessage } from "./admin/shared";
+import LoadError from "../components/LoadError";
+
+/**
+ * The substitution-approval QUEUE. Before this screen, approvals were only
+ * reachable per demand line and via the Home card's handful -- a planner with
+ * twenty pending requests had no list. Decisions go through the same endpoint
+ * the Home card and the Substitution Workspace use; this is a view, not a
+ * second approval mechanism.
+ */
 
 const STATUSES = ["Pending", "Approved", "Rejected"] as const;
-type Status = (typeof STATUSES)[number];
+type QueueStatus = (typeof STATUSES)[number];
 
-type Approval = {
-  id: string;
-  customer_name: string;
-  well_name: string;
-  product_name: string;
-  status: Status;
-  customer_approved: boolean;
-  well_approved: boolean;
-  requested_at: string;
-  decided_at: string | null;
-  note: string | null;
-};
-
-type RowState = { customerApproved: boolean; wellApproved: boolean; busy: boolean; error: string | null };
+function fmtWhen(iso: string | null) {
+  return iso ? iso.slice(0, 16).replace("T", " ") : "—";
+}
 
 export default function ApprovalQueue() {
-  const [params, setParams] = useSearchParams();
-  const tab = (params.get("status") as Status) || "Pending";
+  const [status, setStatus] = useState<QueueStatus>("Pending");
+  const [rows, setRows] = useState<ApprovalQueueRow[] | null>(null);
+  const [error, setError] = useState<unknown>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
 
-  const [approvals, setApprovals] = useState<Approval[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [fetchedAt, setFetchedAt] = useState<Date | null>(null);
-  const [rowState, setRowState] = useState<Record<string, RowState>>({});
-
-  const load = () => {
-    apiGet<Approval[]>(`/substitution-approvals?status=${tab}`)
-      .then((a) => {
-        setApprovals(a);
-        setFetchedAt(new Date());
+  // Tab switches must not race: a slow Pending response landing after a fast
+  // Approved one would render the wrong tab's rows. Each effect run owns a
+  // `live` flag and stale responses are dropped.
+  const [reload, setReload] = useState(0);
+  const load = useCallback(() => setReload((r) => r + 1), []);
+  useEffect(() => {
+    let live = true;
+    api
+      .getSubstitutionApprovals(status)
+      .then((r) => {
+        if (!live) return;
+        setRows(r);
         setError(null);
       })
-      .catch((e: Error) => setError(e.message));
-  };
+      .catch((e) => {
+        // Keep the rows on screen: a failed refresh is a banner, not a blank.
+        if (live) setError(e);
+      });
+    return () => {
+      live = false;
+    };
+  }, [status, reload]);
 
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(load, [tab]);
-
-  const setTab = (s: Status) => {
-    const next = new URLSearchParams(params);
-    next.set("status", s);
-    setParams(next);
-  };
-
-  const getRow = (id: string): RowState => rowState[id] ?? { customerApproved: false, wellApproved: false, busy: false, error: null };
-  const setRow = (id: string, patch: Partial<RowState>) =>
-    setRowState((prev) => ({ ...prev, [id]: { ...getRow(id), ...patch } }));
-
-  const decide = (a: Approval) => {
-    const row = getRow(a.id);
-    setRow(a.id, { busy: true, error: null });
-    apiSend("POST", `/substitution-approvals/${a.id}/decide`, {
-      customer_approved: row.customerApproved,
-      well_approved: row.wellApproved,
-    })
-      .then(() => {
-        setRow(a.id, { busy: false });
-        load();
-      })
-      .catch((e: ApiError | Error) => setRow(a.id, { busy: false, error: errorMessage(e) }));
+  const decide = async (approvalId: string, approved: boolean) => {
+    setBusyId(approvalId);
+    try {
+      await api.decideSubstitutionApproval(approvalId, approved);
+      load();
+    } catch (e) {
+      setError(e);
+    } finally {
+      setBusyId(null);
+    }
   };
 
   return (
-    <div>
-      <Breadcrumbs items={[{ label: "Home", to: "/" }, { label: "Approvals" }]} />
-      <div className="card">
-        <div className="page-header">
-          <h1>Approvals</h1>
-          <Freshness fetchedAt={fetchedAt} onRefresh={load} />
+    <div className="mor-page">
+      <header className="mor-head">
+        <div>
+          <h2>Substitution Approvals</h2>
+          <p className="mor-summary">
+            {rows === null
+              ? "Loading…"
+              : status === "Pending"
+              ? rows.length === 0
+                ? "Nothing is waiting for a decision."
+                : `${rows.length} request(s) waiting for a customer decision.`
+              : `${rows.length} ${status.toLowerCase()} request(s).`}
+          </p>
         </div>
-        {error && <p className="inline-error">{error}</p>}
-
-        <div className="tab-bar">
+        <div className="exec-horizon-picker" role="group" aria-label="Status">
           {STATUSES.map((s) => (
-            <button key={s} type="button" className={`tab ${tab === s ? "active" : ""}`} onClick={() => setTab(s)}>
+            <button
+              key={s}
+              type="button"
+              className={`exec-horizon-btn${s === status ? " exec-horizon-btn-on" : ""}`}
+              aria-pressed={s === status}
+              onClick={() => setStatus(s)}
+            >
               {s}
             </button>
           ))}
         </div>
+      </header>
 
-        <div className="tab-panel">
-          <table className="admin-table">
+      {error != null && <LoadError what="the approval queue" error={error} />}
+
+      {rows !== null && (
+        // Same rows twice, ONE visible at a time (CSS): the table on desktop,
+        // the card list on narrow screens — where the old table clipped the
+        // Approve/Decline buttons, i.e. the entire point of this screen,
+        // off the right-hand edge. Both act through the same `decide`.
+        <div className="table-scroll approval-table-wrap">
+          <table className="approval-queue">
             <thead>
               <tr>
-                <th>Customer</th>
+                <th>Requested</th>
                 <th>Well</th>
-                <th>Product</th>
-                <th>Requested at</th>
-                {tab === "Pending" ? (
-                  <>
-                    <th>Customer approved</th>
-                    <th>Well approved</th>
-                    <th></th>
-                  </>
-                ) : (
-                  <th>Decided at</th>
-                )}
+                <th>Customer</th>
+                <th>Original product</th>
+                <th>Substitute</th>
+                <th className="num">Quantity</th>
+                <th>ROS</th>
+                {status !== "Pending" && <th>Decided</th>}
+                <th>Actions</th>
               </tr>
             </thead>
             <tbody>
-              {(!approvals || approvals.length === 0) && (
+              {rows.map((r) => (
+                <tr key={r.approval_id}>
+                  <td className="num">{fmtWhen(r.requested_at)}</td>
+                  <td>
+                    {r.well_id ? (
+                      <Link to={`/wells/${r.well_id}`}>{r.well_name}</Link>
+                    ) : (
+                      r.well_name ?? "—"
+                    )}
+                  </td>
+                  <td>{r.customer_name ?? "—"}</td>
+                  <td>{r.from_product_description}</td>
+                  <td>{r.to_product_description}</td>
+                  <td className="num">
+                    {r.quantity !== null
+                      ? `${r.quantity.toLocaleString()} ${r.unit_of_measure ?? ""}`
+                      : "—"}
+                  </td>
+                  <td className="num">
+                    {r.ros_date ? r.ros_date.slice(0, 10) : "—"}
+                  </td>
+                  {status !== "Pending" && (
+                    <td className="num">{fmtWhen(r.decided_at)}</td>
+                  )}
+                  <td>
+                    <span className="approval-queue-actions">
+                      <Link to={`/demand-lines/${r.demand_line_id}/substitution`}>
+                        Details
+                      </Link>
+                      {r.status === "Pending" && (
+                        <>
+                          {/* Two-step: a decision is FINAL (409 on
+                              re-decision) -- see ConfirmButton. */}
+                          <ConfirmButton
+                            disabled={busyId === r.approval_id}
+                            label="Approve"
+                            confirmLabel="Confirm approve?"
+                            onConfirm={() => decide(r.approval_id, true)}
+                          />
+                          <ConfirmButton
+                            className="btn-reject"
+                            disabled={busyId === r.approval_id}
+                            label="Decline"
+                            confirmLabel="Confirm decline?"
+                            onConfirm={() => decide(r.approval_id, false)}
+                          />
+                        </>
+                      )}
+                    </span>
+                  </td>
+                </tr>
+              ))}
+              {rows.length === 0 && (
                 <tr>
-                  <td colSpan={tab === "Pending" ? 7 : 5}>—</td>
+                  <td colSpan={status === "Pending" ? 8 : 9} className="empty">
+                    No {status.toLowerCase()} approvals.
+                  </td>
                 </tr>
               )}
-              {approvals?.map((a) => {
-                const row = getRow(a.id);
-                return (
-                  <tr key={a.id}>
-                    <td>{a.customer_name}</td>
-                    <td>{a.well_name}</td>
-                    <td>{a.product_name}</td>
-                    <td className="num">{a.requested_at}</td>
-                    {tab === "Pending" ? (
-                      <>
-                        <td>
-                          <label className="checkbox-label">
-                            <input
-                              type="checkbox"
-                              checked={row.customerApproved}
-                              onChange={(e) => setRow(a.id, { customerApproved: e.target.checked })}
-                            />
-                          </label>
-                        </td>
-                        <td>
-                          <label className="checkbox-label">
-                            <input
-                              type="checkbox"
-                              checked={row.wellApproved}
-                              onChange={(e) => setRow(a.id, { wellApproved: e.target.checked })}
-                            />
-                          </label>
-                        </td>
-                        <td>
-                          {row.error && <p className="inline-error">{row.error}</p>}
-                          <p className="hint">Any unchecked box decides Rejected.</p>
-                          <ConfirmButton
-                            label={row.busy ? "Deciding…" : "Decide"}
-                            armedLabel="Confirm decision"
-                            onConfirm={() => decide(a)}
-                          />
-                        </td>
-                      </>
-                    ) : (
-                      <td className="num">{a.decided_at ?? "—"}</td>
-                    )}
-                  </tr>
-                );
-              })}
             </tbody>
           </table>
         </div>
-      </div>
+      )}
+      {rows !== null && (
+        <div className="approval-cards">
+          {rows.length === 0 && (
+            <p className="empty">No {status.toLowerCase()} approvals.</p>
+          )}
+          {rows.map((r) => (
+            <div className="approval-card" key={r.approval_id}>
+              <div className="approval-card-head">
+                {r.well_id ? (
+                  <Link to={`/wells/${r.well_id}`}>{r.well_name}</Link>
+                ) : (
+                  <span>{r.well_name ?? "—"}</span>
+                )}
+                <span className="approval-card-when">
+                  {fmtWhen(r.requested_at)}
+                </span>
+              </div>
+              <div className="approval-card-body">
+                <span>{r.customer_name ?? "—"}</span>
+                <span>
+                  {r.from_product_description} → {r.to_product_description}
+                </span>
+                <span>
+                  {r.quantity !== null
+                    ? `${r.quantity.toLocaleString()} ${r.unit_of_measure ?? ""}`
+                    : "—"}
+                  {r.ros_date ? ` · ROS ${r.ros_date.slice(0, 10)}` : ""}
+                  {status !== "Pending"
+                    ? ` · decided ${fmtWhen(r.decided_at)}`
+                    : ""}
+                </span>
+              </div>
+              <div className="approval-card-actions">
+                <Link to={`/demand-lines/${r.demand_line_id}/substitution`}>
+                  Details
+                </Link>
+                {r.status === "Pending" && (
+                  <>
+                    <ConfirmButton
+                      disabled={busyId === r.approval_id}
+                      label="Approve"
+                      confirmLabel="Confirm approve?"
+                      onConfirm={() => decide(r.approval_id, true)}
+                    />
+                    <ConfirmButton
+                      className="btn-reject"
+                      disabled={busyId === r.approval_id}
+                      label="Decline"
+                      confirmLabel="Confirm decline?"
+                      onConfirm={() => decide(r.approval_id, false)}
+                    />
+                  </>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      <footer className="mor-notes">
+        <p>
+          Approval grants permission, not steel — it reserves nothing. A
+          decision here is the same operation as on the Home card and in the
+          Substitution Workspace.
+        </p>
+      </footer>
     </div>
   );
 }

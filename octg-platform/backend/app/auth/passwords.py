@@ -1,30 +1,40 @@
-"""PBKDF2-SHA256 password hashing (spec §認証コア)."""
+"""PBKDF2 password hashing for the dev credential store.
+
+Stdlib only, deliberately: this hash exists ONLY for the dev login
+(app.auth.provider.DevPasswordProvider). Under Entra ID no password ever
+reaches this platform, so pulling in bcrypt/argon2 for a credential path that
+is scheduled to disappear would be dependency weight without a beneficiary.
+600k iterations matches the 2023+ OWASP guidance for PBKDF2-SHA256.
+"""
 
 import hashlib
 import hmac
-import os
+import secrets
 
 _ALGORITHM = "pbkdf2_sha256"
 _ITERATIONS = 600_000
-_SALT_BYTES = 16
 
 
 def hash_password(password: str) -> str:
-    salt = os.urandom(_SALT_BYTES)
-    derived = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, _ITERATIONS)
-    return f"{_ALGORITHM}${_ITERATIONS}${salt.hex()}${derived.hex()}"
+    salt = secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac(
+        "sha256", password.encode(), salt.encode(), _ITERATIONS
+    ).hex()
+    return f"{_ALGORITHM}${_ITERATIONS}${salt}${digest}"
 
 
-def verify_password(password: str, encoded: str) -> bool:
+def verify_password(password: str, stored: str | None) -> bool:
+    """False for a NULL/malformed hash, never an exception -- a user row
+    provisioned for Entra (password_hash NULL) must simply fail dev login."""
+    if not stored:
+        return False
     try:
-        algorithm, iterations_s, salt_hex, hash_hex = encoded.split("$")
+        algorithm, iterations, salt, digest = stored.split("$", 3)
         if algorithm != _ALGORITHM:
             return False
-        iterations = int(iterations_s)
-        salt = bytes.fromhex(salt_hex)
-        expected = bytes.fromhex(hash_hex)
-    except (ValueError, AttributeError):
+        candidate = hashlib.pbkdf2_hmac(
+            "sha256", password.encode(), salt.encode(), int(iterations)
+        ).hex()
+    except (ValueError, TypeError):
         return False
-
-    derived = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
-    return hmac.compare_digest(derived, expected)
+    return hmac.compare_digest(candidate, digest)

@@ -1,486 +1,334 @@
-# C-01R resolved (stage 7): protected via app.main's include_router(dependencies=[...]).
-"""spec §Executive エンジン/API: GET /dashboard/executive.
-
-MT headline conversion happens ONLY here (E-1) — the executive engine's
-blocks stay native. status[]/profile[] scope-override semantics per E-2:
-params absent entirely = default (stored CoverageResult fast path for the
-coverage block); any params present (even an empty list) = non-default,
-in-memory judge_customer path, with scope_is_default:false and a warning
-field in the response.
-"""
-
-from __future__ import annotations
-
-import datetime
-
-from fastapi import APIRouter, Depends, Query
-from pydantic import BaseModel
-from sqlalchemy.orm import Session
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.orm import Session, joinedload
 
 from app.db import get_db
-from app.engines.coverage import _scope
+from app.engines.coverage_scope import (
+    effective_profile_filter,
+    effective_status_filter,
+)
+from app.engines.coverage_view import scoped_verdicts
 from app.engines.executive import (
-    coverage_rows,
-    demand_trend_rows,
-    inventory_utilisation_rows,
-    soft_allocation_rows,
-    supply_risk_rows,
+    ALLOCATION_HORIZONS,
+    ScopeContradiction,
+    executive_summary,
 )
+from app.engines.well_dates import sort_by_earliest_ros, well_dates
 from app.models import (
-    Customer,
     CoverageResult,
-    CoverageVerdict,
+    CoverageStatus,
     DemandLine,
-    DemandRevision,
-    Product,
-    SubstitutionApproval,
-    SubstitutionApprovalStatus,
+    DemandProfile,
+    DemandStatus,
+    ImpactRecord,
+    PlanningNode,
     Well,
+    Product,
 )
-from app.services.dates import today
+from app.schemas import (
+    ExecutiveSummaryOut,
+    HomeDashboardOut,
+    ImpactRecordOut,
+    PendingApprovalCardOut,
+    WellSummary,
+)
 
-router = APIRouter(prefix="/dashboard")
-
-# spec E-2 wording, verbatim — shared with /analysis/surplus.
-SCOPE_OVERRIDE_WARNING = "Recomputed read-only — NOT the official stored verdicts"
-
-# Human-readable verdict labels are a display-layer concern (spec §coverage block).
-VERDICT_LABELS = {
-    "Covered": "Covered",
-    "CoveredViaSubstitute": "Covered via substitute",
-    "PendingApproval": "Pending approval",
-    "Uncovered": "Uncovered",
-    "Unrecoverable": "Unrecoverable",
-}
+router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
 
-def _unit_value(unit) -> str:
-    return unit.value if hasattr(unit, "value") else unit
+def _impact_out(db: Session, record: ImpactRecord) -> ImpactRecordOut:
+    """One "Demand Changes" row, with the product named and the quantities labelled.
 
-
-def _mt_headline(db: Session, entries: list[tuple[str, object, float]]) -> tuple[float, bool]:
-    """entries: (product_id, unit, qty). E-1: a row already in MT passes
-    straight through (no weight needed). Any other unit needs
-    Product.weight_kg (qty * weight_kg / 1000); a product with weight_kg=None
-    is excluded from the MT total and flips mt_incomplete — never fabricated."""
-    cache: dict[str, Product | None] = {}
-    total = 0.0
-    incomplete = False
-    for product_id, unit, qty in entries:
-        if _unit_value(unit) == "MT":
-            total += qty
-            continue
-        if product_id not in cache:
-            cache[product_id] = db.get(Product, product_id)
-        product = cache[product_id]
-        if product is None or product.weight_kg is None:
-            incomplete = True
-            continue
-        total += qty * product.weight_kg / 1000.0
-    return total, incomplete
-
-
-def _native_by_unit(pairs) -> dict[str, float]:
-    out: dict[str, float] = {}
-    for unit, qty in pairs:
-        uv = _unit_value(unit)
-        out[uv] = out.get(uv, 0.0) + qty
-    return out
-
-
-def _product_name(db: Session, product_id: str) -> str:
-    p = db.get(Product, product_id)
-    return p.name if p is not None else product_id
-
-
-def _resolve_scope(db: Session, status: list[str] | None, profile: list[str] | None):
-    scope_is_default = status is None and profile is None
-    default_statuses, default_profiles = _scope(db)
-    statuses = set(status) if status is not None else default_statuses
-    profiles = set(profile) if profile is not None else default_profiles
-    return statuses, profiles, scope_is_default
-
-
-def _build_demand_trend(db: Session, statuses, profiles, as_of) -> dict:
-    months = demand_trend_rows(db, statuses, profiles, as_of)
-    all_entries: list[tuple[str, object, float]] = []
-    months_out = []
-    for m in months:
-        entries = [(r["product_id"], r["unit"], r["qty"]) for r in m.rows]
-        all_entries.extend(entries)
-        month_mt, month_incomplete = _mt_headline(db, entries)
-        months_out.append(
-            {
-                "month": m.month,
-                "qty_by_unit": _native_by_unit([(r["unit"], r["qty"]) for r in m.rows]),
-                "mt_total": month_mt,
-                "mt_incomplete": month_incomplete,
-            }
-        )
-    mt_total, mt_incomplete = _mt_headline(db, all_entries)
-    return {
-        "available": True,
-        "reason": None,
-        "mt_total": mt_total,
-        "mt_incomplete": mt_incomplete,
-        "months": months_out,
-    }
-
-
-def _build_coverage(db: Session, statuses, profiles, use_stored: bool) -> dict:
-    rows, reason = coverage_rows(db, statuses, profiles, use_stored)
-    if rows is None:
-        return {
-            "available": False,
-            "reason": reason,
-            "mt_total": 0.0,
-            "mt_incomplete": False,
-            "by_verdict": {},
-        }
-
-    entries = [(r.product_id, r.unit, r.qty) for r in rows]
-    mt_total, mt_incomplete = _mt_headline(db, entries)
-
-    by_verdict: dict[str, dict] = {}
-    for r in rows:
-        v = by_verdict.setdefault(
-            r.verdict,
-            {"label": VERDICT_LABELS.get(r.verdict, r.verdict), "count": 0, "qty_by_unit": {}},
-        )
-        v["count"] += r.count
-        uv = _unit_value(r.unit)
-        v["qty_by_unit"][uv] = v["qty_by_unit"].get(uv, 0.0) + r.qty
-
-    return {
-        "available": True,
-        "reason": None,
-        "mt_total": mt_total,
-        "mt_incomplete": mt_incomplete,
-        "by_verdict": by_verdict,
-    }
-
-
-def _build_supply_risk(db: Session, statuses, profiles, horizon: int | None, as_of) -> dict:
-    rows = supply_risk_rows(db, statuses, profiles, horizon=horizon, as_of=as_of)
-    entries = [(r.product_id, r.unit, r.opening_total) for r in rows]
-    mt_total, mt_incomplete = _mt_headline(db, entries)
-    items = [
-        {
-            "product_id": r.product_id,
-            "product_name": _product_name(db, r.product_id),
-            "bu_id": r.bu_id,
-            "unit": _unit_value(r.unit),
-            "runout_month": r.runout_month,
-            "opening_total": r.opening_total,
-        }
-        for r in rows
-    ]
-    return {
-        "available": True,
-        "reason": None,
-        "mt_total": mt_total,
-        "mt_incomplete": mt_incomplete,
-        "items": items,
-    }
-
-
-def _build_soft_allocation(db: Session, statuses, profiles) -> dict:
-    rows = soft_allocation_rows(db, statuses, profiles)
-    entries = [(r.product_id, r.unit, r.from_free_qty) for r in rows]
-    mt_total, mt_incomplete = _mt_headline(db, entries)
-
-    by_customer: dict[str, dict] = {}
-    for r in rows:
-        c = by_customer.setdefault(r.customer_id, {"customer_name": r.customer_name, "qty_by_unit": {}})
-        uv = _unit_value(r.unit)
-        c["qty_by_unit"][uv] = c["qty_by_unit"].get(uv, 0.0) + r.from_free_qty
-
-    return {
-        "available": True,
-        "reason": None,
-        "mt_total": mt_total,
-        "mt_incomplete": mt_incomplete,
-        "by_customer": by_customer,
-    }
-
-
-def _build_inventory_utilisation(db: Session, statuses, profiles) -> dict:
-    rows = inventory_utilisation_rows(db, statuses, profiles)
-    entries = [(r.product_id, r.unit, r.surplus + r.obsolete) for r in rows]
-    mt_total, mt_incomplete = _mt_headline(db, entries)
-
-    totals_by_unit: dict[str, dict] = {}
-    for r in rows:
-        uv = _unit_value(r.unit)
-        t = totals_by_unit.setdefault(uv, {"allocated": 0.0, "surplus": 0.0, "obsolete": 0.0})
-        t["allocated"] += r.allocated
-        t["surplus"] += r.surplus
-        t["obsolete"] += r.obsolete
-
-    products = [
-        {
-            "product_id": r.product_id,
-            "product_name": _product_name(db, r.product_id),
-            "unit": _unit_value(r.unit),
-            "surplus": r.surplus,
-            "obsolete": r.obsolete,
-            "not_tied": r.surplus + r.obsolete,
-        }
-        for r in rows
-    ]
-
-    return {
-        "available": True,
-        "reason": None,
-        "mt_total": mt_total,
-        "mt_incomplete": mt_incomplete,
-        "totals_by_unit": totals_by_unit,
-        "products": products,
-    }
-
-
-@router.get("/executive")
-def get_executive_dashboard(
-    status: list[str] | None = Query(None),
-    profile: list[str] | None = Query(None),
-    horizon: int | None = None,
-    db: Session = Depends(get_db),
-):
-    statuses, profiles, scope_is_default = _resolve_scope(db, status, profile)
-    as_of = today()
-
-    body = {
-        "scope_is_default": scope_is_default,
-        "status_scope": sorted(statuses),
-        "profile_scope": sorted(profiles),
-        "demand_trend": _build_demand_trend(db, statuses, profiles, as_of),
-        "coverage": _build_coverage(db, statuses, profiles, use_stored=scope_is_default),
-        "supply_risk": _build_supply_risk(db, statuses, profiles, horizon, as_of),
-        "soft_allocation": _build_soft_allocation(db, statuses, profiles),
-        "inventory_utilisation": _build_inventory_utilisation(db, statuses, profiles),
-    }
-    if not scope_is_default:
-        body["warning"] = SCOPE_OVERRIDE_WARNING
-    return body
-
-
-# --- GET /dashboard/home (spec §Home Dashboard) -----------------------------
-
-_ATTENTION_SEVERITY = {
-    CoverageVerdict.UNCOVERED.value: 0,
-    CoverageVerdict.UNRECOVERABLE.value: 1,
-}
-
-
-class CoverageKpiOut(BaseModel):
-    rate: float | None
-    covered_count: int
-    evaluated_count: int
-    not_evaluated_count: int
-
-
-class HomeKpiOut(BaseModel):
-    customer_count: int
-    well_status_counts: dict[str, int]
-    coverage: CoverageKpiOut
-    pending_approvals_count: int
-
-
-class DemandChangeOut(BaseModel):
-    id: str
-    well_id: str
-    well_name: str
-    revision_no: int
-    applied_at: datetime.datetime
-    source: str
-    summary: str
-
-
-class PendingUnionRowOut(BaseModel):
-    source: str  # "request" | "verdict"
-    label: str
-    id: str
-    well_id: str
-    well_name: str
-    demand_line_id: str
-    link: str
-
-
-class AttentionWellOut(BaseModel):
-    well_id: str
-    well_name: str
-    customer_id: str
-    customer_name: str
-    worst_verdict: str
-    line_count: int
-
-
-class HomeOut(BaseModel):
-    kpi: HomeKpiOut
-    demand_changes: list[DemandChangeOut]
-    pending_union: list[PendingUnionRowOut]
-    attention_wells: list[AttentionWellOut]
-
-
-def _build_kpi(db: Session) -> HomeKpiOut:
-    customer_count = db.query(Customer).count()
-
-    well_status_counts: dict[str, int] = {}
-    for (status,) in db.query(Well.demand_status).all():
-        key = _unit_value(status)
-        well_status_counts[key] = well_status_counts.get(key, 0) + 1
-
-    total_lines = db.query(DemandLine).count()
-    verdict_counts: dict[str, int] = {}
-    for (verdict,) in db.query(CoverageResult.verdict).all():
-        key = _unit_value(verdict)
-        verdict_counts[key] = verdict_counts.get(key, 0) + 1
-
-    evaluated_count = sum(verdict_counts.values())
-    not_evaluated_count = total_lines - evaluated_count
-    covered_count = verdict_counts.get(CoverageVerdict.COVERED.value, 0) + verdict_counts.get(
-        CoverageVerdict.COVERED_VIA_SUBSTITUTE.value, 0
-    )
-    rate = (covered_count / evaluated_count) if evaluated_count > 0 else None
-
-    pending_approvals_count = (
-        db.query(SubstitutionApproval)
-        .filter_by(status=SubstitutionApprovalStatus.PENDING)
-        .count()
-    )
-
-    return HomeKpiOut(
-        customer_count=customer_count,
-        well_status_counts=well_status_counts,
-        coverage=CoverageKpiOut(
-            rate=rate,
-            covered_count=covered_count,
-            evaluated_count=evaluated_count,
-            not_evaluated_count=not_evaluated_count,
+    The product is reached through the demand line. It can be absent: an
+    ImpactRecord outlives a deleted demand line (the FK has no cascade), so a
+    historical row may have nothing to read -- reported as null rather than as a
+    guessed unit.
+    """
+    line = db.get(DemandLine, record.demand_line_id)
+    product = line.product if line is not None else None
+    well = db.get(Well, record.well_id)
+    node = well.planning_node if well is not None else None
+    customer = node.customer if node is not None else None
+    return ImpactRecordOut(
+        id=record.id,
+        demand_line_id=record.demand_line_id,
+        well_id=record.well_id,
+        well_name=well.name if well is not None else None,
+        customer_name=customer.name if customer is not None else None,
+        product_description=(
+            (product.description or product.id) if product is not None else None
         ),
-        pending_approvals_count=pending_approvals_count,
+        unit_of_measure=product.unit_of_measure if product is not None else None,
+        quantity_before=record.quantity_before,
+        quantity_after=record.quantity_after,
+        ros_date_before=record.ros_date_before,
+        ros_date_after=record.ros_date_after,
+        status_before=record.status_before,
+        status_after=record.status_after,
+        coverage_before=record.coverage_before,
+        coverage_after=record.coverage_after,
+        created_at=record.created_at,
     )
 
 
-def _build_demand_changes(db: Session) -> list[DemandChangeOut]:
-    revisions = (
-        db.query(DemandRevision).order_by(DemandRevision.applied_at.desc()).limit(15).all()
+@router.get("/home", response_model=HomeDashboardOut)
+def home_dashboard(db: Session = Depends(get_db)):
+    recent_changes = (
+        db.query(ImpactRecord).order_by(ImpactRecord.created_at.desc()).limit(20).all()
     )
-    out: list[DemandChangeOut] = []
-    for rev in revisions:
-        well = db.get(Well, rev.well_id)
-        out.append(
-            DemandChangeOut(
-                id=rev.id,
-                well_id=rev.well_id,
-                well_name=well.name if well else "",
-                revision_no=rev.revision_no,
-                applied_at=rev.applied_at,
-                source=_unit_value(rev.source),
-                summary=rev.summary,
-            )
+    uncovered_wells = (
+        db.query(Well)
+        .options(
+            joinedload(Well.planning_node).joinedload(PlanningNode.customer)
         )
-    return out
-
-
-def _build_pending_union(db: Session) -> list[PendingUnionRowOut]:
-    """spec §Home: pending_union = 未決定 SubstitutionApproval 全件 ∪ 申請前の
-    PendingApproval 判定明細. A demand line with BOTH an existing pending
-    request AND a PendingApproval verdict appears only once, as "request"
-    (the request is the actionable item; the verdict is its cause)."""
-    out: list[PendingUnionRowOut] = []
-    requested_line_ids: set[str] = set()
+        .filter(Well.coverage_status == CoverageStatus.UNCOVERED.value).all()
+    )
+    # The two dates the uncovered-wells card was unactionable without: when the
+    # well first needs steel, and when it first falls short. Batched -- ONE call for
+    # every uncovered well, not one per row (see `app.engines.well_dates`), which
+    # matters because this card lists every uncovered well in the platform.
+    uncovered_dates = well_dates(db, [w.id for w in uncovered_wells])
+    # The "Pending Approvals" card is a UNION of two kinds of work item
+    # (product-owner decision, 2026-08-14):
+    #
+    #   1. EVERY open WellSubstitutionApproval request -- whatever its line's
+    #      verdict, whatever its well's scope. QA caught the old verdict-driven
+    #      card hiding a freshly raised request whose line still read Uncovered,
+    #      even though the Approvals queue listed it. A request awaits a
+    #      customer decision; the work queue must say so.
+    #   2. In-scope lines whose stored verdict is PendingApproval but which
+    #      have NO open request yet -- the engine writes that verdict when a
+    #      substitute WOULD cover the line if approved, before anyone has
+    #      raised the request. The card renders these without buttons and
+    #      points at the substitution screen, exactly as before.
+    from app.models import SubstitutionApprovalStatus, WellSubstitutionApproval
 
     pending_requests = (
-        db.query(SubstitutionApproval).filter_by(status=SubstitutionApprovalStatus.PENDING).all()
-    )
-    for approval in pending_requests:
-        requested_line_ids.add(approval.demand_line_id)
-        well = db.get(Well, approval.well_id)
-        out.append(
-            PendingUnionRowOut(
-                source="request",
-                label="Substitution approval requested",
-                id=approval.id,
-                well_id=approval.well_id,
-                well_name=well.name if well else "",
-                demand_line_id=approval.demand_line_id,
-                link="/approvals",
-            )
-        )
-
-    verdict_rows = (
-        db.query(CoverageResult).filter_by(verdict=CoverageVerdict.PENDING_APPROVAL).all()
-    )
-    for result in verdict_rows:
-        if result.demand_line_id in requested_line_ids:
-            continue
-        line = db.get(DemandLine, result.demand_line_id)
-        if line is None:
-            continue
-        well = db.get(Well, line.well_id)
-        out.append(
-            PendingUnionRowOut(
-                source="verdict",
-                label="Awaiting substitution request",
-                id=result.id,
-                well_id=line.well_id,
-                well_name=well.name if well else "",
-                demand_line_id=result.demand_line_id,
-                link=f"/substitution?demand_line_id={result.demand_line_id}",
-            )
-        )
-
-    return out
-
-
-def _build_attention_wells(db: Session) -> list[AttentionWellOut]:
-    """Top 5 wells whose worst verdict is Uncovered/Unrecoverable, worst first."""
-    rows = (
-        db.query(CoverageResult, DemandLine)
-        .join(DemandLine, CoverageResult.demand_line_id == DemandLine.id)
+        db.query(WellSubstitutionApproval, DemandLine, Well)
+        .join(DemandLine, WellSubstitutionApproval.demand_line_id == DemandLine.id)
+        .join(Well, Well.id == DemandLine.well_id)
         .filter(
-            CoverageResult.verdict.in_(
-                [CoverageVerdict.UNCOVERED, CoverageVerdict.UNRECOVERABLE]
-            )
+            WellSubstitutionApproval.status == SubstitutionApprovalStatus.PENDING
+        )
+        .order_by(WellSubstitutionApproval.requested_at.desc())
+        .all()
+    )
+    requested_line_ids = {line.id for _a, line, _w in pending_requests}
+    # Verdict-driven lines keep the coverage-scope guard they always had: a
+    # verdict outside the scope is one the engine no longer stands behind.
+    verdict_only_lines = (
+        db.query(DemandLine, Well)
+        .join(CoverageResult, CoverageResult.demand_line_id == DemandLine.id)
+        .join(Well, Well.id == DemandLine.well_id)
+        .filter(
+            CoverageResult.status == CoverageStatus.PENDING_APPROVAL,
+            Well.demand_status.in_(
+                sorted(effective_status_filter(db), key=lambda s: s.value)
+            ),
+            DemandLine.profile.in_(
+                sorted(effective_profile_filter(db), key=lambda p: p.value)
+            ),
         )
         .all()
     )
+    verdict_only_lines = [
+        (line, well)
+        for line, well in verdict_only_lines
+        if line.id not in requested_line_ids
+    ]
 
-    by_well: dict[str, dict] = {}
-    for result, line in rows:
-        entry = by_well.setdefault(line.well_id, {"worst": result.verdict.value, "line_count": 0})
-        entry["line_count"] += 1
-        if _ATTENTION_SEVERITY[result.verdict.value] > _ATTENTION_SEVERITY[entry["worst"]]:
-            entry["worst"] = result.verdict.value
-
-    ranked = sorted(
-        by_well.items(),
-        key=lambda kv: (-_ATTENTION_SEVERITY[kv[1]["worst"]], -kv[1]["line_count"]),
-    )
-
-    out: list[AttentionWellOut] = []
-    for well_id, entry in ranked[:5]:
-        well = db.get(Well, well_id)
-        customer = db.get(Customer, well.customer_id) if well else None
-        out.append(
-            AttentionWellOut(
-                well_id=well_id,
-                well_name=well.name if well else "",
-                customer_id=well.customer_id if well else "",
-                customer_name=customer.name if customer else "",
-                worst_verdict=entry["worst"],
-                line_count=entry["line_count"],
+    return HomeDashboardOut(
+        demand_changes=[_impact_out(db, r) for r in recent_changes],
+        # SORTED BY EARLIEST ROS ASCENDING, server-side, exactly as the product
+        # owner asked -- and by the same helper GET /wells and the coverage grid use,
+        # so all three screens present wells in one order.
+        uncovered_wells=sort_by_earliest_ros(
+            [
+                WellSummary(
+                    id=w.id,
+                    name=w.name,
+                    customer_id=(
+                        w.planning_node.customer_id
+                        if w.planning_node is not None
+                        else None
+                    ),
+                    customer_name=(
+                        w.planning_node.customer.name
+                        if w.planning_node is not None
+                        and w.planning_node.customer is not None
+                        else None
+                    ),
+                    demand_status=w.demand_status,
+                    coverage_status=w.coverage_status,
+                    earliest_ros_date=(
+                        d.earliest_ros_date
+                        if (d := uncovered_dates.get(w.id)) is not None
+                        else None
+                    ),
+                    first_runout_date=(
+                        d.first_runout_date
+                        if (d := uncovered_dates.get(w.id)) is not None
+                        else None
+                    ),
+                )
+                for w in uncovered_wells
+            ]
+        ),
+        pending_approvals=[
+            PendingApprovalCardOut(
+                well_id=well.id,
+                well_name=well.name,
+                customer_name=(
+                    well.planning_node.customer.name
+                    if well.planning_node is not None
+                    and well.planning_node.customer is not None
+                    else None
+                ),
+                demand_line_id=line.id,
+                product_description=line.product.description or line.product_id,
+                # The card shows a quantity, so it shows a unit. Same rule as every
+                # other quantity-bearing payload.
+                quantity=line.quantity,
+                unit_of_measure=line.product.unit_of_measure,
+                ros_date=line.ros_date.isoformat(),
+                approval_id=approval.id,
+                substitute_description=(
+                    substitute.description if substitute is not None else None
+                ),
             )
-        )
-    return out
-
-
-@router.get("/home", response_model=HomeOut)
-def get_home_dashboard(db: Session = Depends(get_db)):
-    return HomeOut(
-        kpi=_build_kpi(db),
-        demand_changes=_build_demand_changes(db),
-        pending_union=_build_pending_union(db),
-        attention_wells=_build_attention_wells(db),
+            for approval, line, well in pending_requests
+            for substitute in [db.get(Product, approval.to_product_id)]
+        ]
+        + [
+            PendingApprovalCardOut(
+                well_id=well.id,
+                well_name=well.name,
+                customer_name=(
+                    well.planning_node.customer.name
+                    if well.planning_node is not None
+                    and well.planning_node.customer is not None
+                    else None
+                ),
+                demand_line_id=line.id,
+                product_description=line.product.description or line.product_id,
+                quantity=line.quantity,
+                unit_of_measure=line.product.unit_of_measure,
+                ros_date=line.ros_date.isoformat(),
+                # No open request: the card renders these without decision
+                # buttons and points at the substitution screen.
+                approval_id=None,
+                substitute_description=None,
+            )
+            for line, well in verdict_only_lines
+        ],
     )
+
+
+@router.get("/executive", response_model=ExecutiveSummaryOut)
+def executive_dashboard(
+    db: Session = Depends(get_db),
+    customer_id: str | None = None,
+    business_unit_id: str | None = None,
+    allocation_horizon_months: int = Query(default=12),
+    inventory_utilisation_horizon_months: int = Query(default=12),
+    status: list[DemandStatus] | None = Query(default=None),
+    profile: list[DemandProfile] | None = Query(default=None),
+):
+    """Executive aggregates, for a Business Unit and/or a customer.
+
+    SCOPE
+    -----
+    Both filters are optional. `business_unit_id` is arguably the more natural
+    management default: the Business Unit is the platform's HARD inventory
+    boundary, so it is the smallest scope inside which the supply figures mean
+    anything. The payload states which scope produced it, in `scope` and in the
+    top-level `business_unit_id` / `business_unit_name` / `customer_id` /
+    `customer_name` mirrors.
+
+    Naming a customer together with a Business Unit it does not belong to is a
+    **400**, not an empty result. The request describes a scope that cannot exist,
+    and an empty payload would report no demand, no supply risk and no shortfall
+    for it -- a measurement of nothing, which reads as good news. See
+    `app.engines.executive.resolve_scope`.
+
+    HONESTY
+    -------
+    This screen goes to management, so every block carries an `available` flag and
+    a `reason` when false. A figure that cannot be computed from the data we hold
+    is returned as unavailable -- never as 0, which would read as a measured zero.
+    Specifically:
+
+      * prior-period demand is reported unavailable unless every in-scope demand
+        line's state at the comparison date can be genuinely reconstructed from
+        `DemandRevision` history (see `app.engines.executive._state_as_of`);
+      * coverage is measured by DEMAND QUANTITY, with the well counts kept beside it
+        as reference, and the percentage is withheld when the in-scope book spans
+        several units of measure;
+      * `soft_allocation_coverage` reports what THIS platform's allocation achieved
+        -- from the shared pool, from an Oracle assignment, via a substitute, or not
+        at all -- and replaces the old `allocation` block, which reported Oracle's
+        hard assignment and which the product owner asked to be reframed. Its
+        figures come from the same single coverage pass as the coverage verdicts;
+      * `incoming_supply` reports on-order material from the read-only projection of
+        Oracle purchase orders. A product with no projected row has an UNKNOWN
+        on-order quantity and the block says so; `oracle_integrated` stays false
+        because the feed is still not live.
+
+    Supply risk is the coverage engine's own `Unrecoverable` verdict, read rather
+    than re-derived, and `first_runout` reuses `app.engines.well_dates`.
+    """
+    if allocation_horizon_months not in ALLOCATION_HORIZONS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "allocation_horizon_months must be one of "
+                f"{list(ALLOCATION_HORIZONS)}"
+            ),
+        )
+    if inventory_utilisation_horizon_months not in ALLOCATION_HORIZONS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "inventory_utilisation_horizon_months must be one of "
+                f"{list(ALLOCATION_HORIZONS)}"
+            ),
+        )
+
+    # Demand scope (well status / line profile) is variable per request, like
+    # the Coverage Workspace's: the default serves the stored official
+    # verdicts, anything else runs every block inside a read-only recompute
+    # under the requested scope (scoped_verdicts) so all blocks agree and
+    # nothing is persisted. The payload names the scope it was computed under.
+    status_set = set(status) if status else None
+    profile_set = set(profile) if profile else None
+    try:
+        with scoped_verdicts(db, status_set, profile_set) as (
+            scope_is_default,
+            skipped_customers,
+        ):
+            summary = executive_summary(
+                db,
+                customer_id=customer_id,
+                business_unit_id=business_unit_id,
+                allocation_horizon_months=allocation_horizon_months,
+                inventory_utilisation_horizon_months=inventory_utilisation_horizon_months,
+            )
+            applied_status = sorted(
+                s.value for s in (status_set or effective_status_filter(db))
+            )
+            applied_profile = sorted(
+                p.value for p in (profile_set or effective_profile_filter(db))
+            )
+    except ScopeContradiction as exc:
+        # 400, not an empty 200 -- see the docstring and `resolve_scope`.
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except LookupError as exc:
+        # An id that names nothing. Distinguished from the contradiction above
+        # because they are different mistakes: one names a row that is not there,
+        # the other names two rows that cannot be combined.
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    summary_out = ExecutiveSummaryOut.model_validate(summary)
+    summary_out.status_scope = applied_status
+    summary_out.profile_scope = applied_profile
+    summary_out.scope_is_default = scope_is_default
+    summary_out.skipped_customers = list(skipped_customers)
+    return summary_out

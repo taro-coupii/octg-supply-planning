@@ -1,114 +1,217 @@
-# C-01R resolved (stage 7): protected via app.main's include_router(dependencies=[...]).
-"""spec §API row 6: GET /substitution/candidates. Reuses allocation.free_pool /
-hard_assigned_total (sole implementations) — never re-derives pool math here.
-
-裁定S-1 blocked_by priority: customer > well-approval > oracle-release > null.
-"""
-
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
-from sqlalchemy.orm import Session
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.orm import Session, joinedload
 
 from app.db import get_db
-from app.engines.allocation import allocate_lines, free_pool, hard_assigned_total
-from app.engines.coverage import _scope, scoped_lines
+from app.engines.coverage import compute_customer_coverage, recompute_well
+from app.engines.substitution import (
+    approval_by_date,
+    decide_approval,
+    find_candidates,
+    request_approval,
+)
 from app.models import (
-    Customer,
-    CustomerSubstitutionRule,
     DemandLine,
+    PlanningNode,
     Product,
-    SubstitutionApproval,
     SubstitutionApprovalStatus,
-    TechnicalSubstitution,
     Well,
+    WellSubstitutionApproval,
+)
+from app.schemas import (
+    ApprovalQueueRowOut,
+    SubstitutionApprovalIn,
+    SubstitutionApprovalOut,
+    SubstitutionCandidateOut,
+    SubstitutionDecisionIn,
 )
 
-router = APIRouter(prefix="/substitution")
+router = APIRouter(tags=["substitution"])
 
 
-class CandidateOut(BaseModel):
-    substitution_id: str
-    to_product: str
-    technical_ok: bool
-    customer_rule_allowed: bool
-    free_qty_by_unit: float
-    hard_assigned_qty: float
-    verdict_if_applied: bool
-    blocked_by: str | None
+@router.get(
+    "/substitution-approvals", response_model=list[ApprovalQueueRowOut]
+)
+def list_substitution_approvals(
+    status: SubstitutionApprovalStatus | None = None,
+    limit: int = Query(default=200, ge=1, le=1000),
+    db: Session = Depends(get_db),
+):
+    """The approval QUEUE: every well-substitution approval, newest request
+    first, optionally filtered by status.
+
+    Exists because approvals were only reachable per demand line (and the
+    Home card caps at a handful) -- a planner with twenty pending requests
+    had no screen listing them. Decisions still go through the one existing
+    endpoint (`POST /substitution-approvals/{id}/decision`)."""
+    query = db.query(WellSubstitutionApproval)
+    if status is not None:
+        query = query.filter(WellSubstitutionApproval.status == status)
+    approvals = (
+        query.order_by(WellSubstitutionApproval.requested_at.desc())
+        .limit(limit)
+        .all()
+    )
+
+    # Bulk lookups, not one round trip per approval: the queue is a LIST
+    # screen and its cost must not scale 6 queries per row.
+    line_ids = {a.demand_line_id for a in approvals}
+    lines = {
+        line.id: line
+        for line in db.query(DemandLine)
+        .options(
+            joinedload(DemandLine.well)
+            .joinedload(Well.planning_node)
+            .joinedload(PlanningNode.customer),
+            joinedload(DemandLine.product),
+        )
+        .filter(DemandLine.id.in_(sorted(line_ids)))
+        .all()
+    }
+    product_ids = {a.from_product_id for a in approvals} | {
+        a.to_product_id for a in approvals
+    }
+    products = {
+        p.id: p
+        for p in db.query(Product).filter(Product.id.in_(sorted(product_ids))).all()
+    }
+
+    out: list[ApprovalQueueRowOut] = []
+    for a in approvals:
+        line = lines.get(a.demand_line_id)
+        well = line.well if line is not None else None
+        node = well.planning_node if well is not None else None
+        from_product = products.get(a.from_product_id)
+        to_product = products.get(a.to_product_id)
+        out.append(ApprovalQueueRowOut(
+            approval_id=a.id,
+            demand_line_id=a.demand_line_id,
+            status=a.status.value,
+            requested_at=a.requested_at,
+            decided_at=a.decided_at,
+            well_id=well.id if well is not None else None,
+            well_name=well.name if well is not None else None,
+            customer_name=(
+                node.customer.name
+                if node is not None and node.customer is not None
+                else None
+            ),
+            from_product_description=(
+                (from_product.description or from_product.id)
+                if from_product is not None
+                else a.from_product_id
+            ),
+            to_product_description=(
+                (to_product.description or to_product.id)
+                if to_product is not None
+                else a.to_product_id
+            ),
+            quantity=line.quantity if line is not None else None,
+            unit_of_measure=(
+                line.product.unit_of_measure
+                if line is not None and line.product is not None
+                else None
+            ),
+            ros_date=line.ros_date if line is not None else None,
+        ))
+    return out
 
 
-@router.get("/candidates", response_model=list[CandidateOut])
-def get_candidates(demand_line_id: str, db: Session = Depends(get_db)):
+def _get_line(db: Session, demand_line_id: str) -> DemandLine:
     line = db.get(DemandLine, demand_line_id)
     if line is None:
         raise HTTPException(status_code=404, detail="Demand line not found")
+    return line
 
-    well = db.get(Well, line.well_id)
-    customer = db.get(Customer, well.customer_id)
-    if customer.business_unit_id is None:
-        raise HTTPException(status_code=422, detail=f"Customer {customer.id} has no business_unit_id")
-    bu_id = customer.business_unit_id
 
-    # Current shortfall for this line, computed against the customer's FULL
-    # scoped line set (matching what recompute uses) — never in isolation, since
-    # an earlier line in the same scope may already have depleted the pool this
-    # line would otherwise draw from.
-    statuses, profiles = _scope(db)
-    scope_lines = scoped_lines(db, customer.id, statuses, profiles)
-    if line not in scope_lines:
-        scope_lines = scope_lines + [line]
-    allocations = allocate_lines(db, customer, scope_lines)
-    shortfall = next((a.shortfall for a in allocations if a.line.id == line.id), 0.0)
+@router.get(
+    "/demand-lines/{demand_line_id}/substitution-candidates",
+    response_model=list[SubstitutionCandidateOut],
+)
+def list_substitution_candidates(demand_line_id: str, db: Session = Depends(get_db)):
+    line = _get_line(db, demand_line_id)
 
-    subs = db.query(TechnicalSubstitution).filter_by(from_product_id=line.product_id).all()
+    # Two of the annotations a planner needs are POOL-WIDE facts a single line
+    # cannot derive: which substitute quantity is hard-assigned to another demand
+    # line (so the platform may not take it), and how much PendingApproval demand
+    # is riding on the same substitute (so approving all of it cannot succeed).
+    # Both come from the one coverage implementation rather than a second
+    # derivation here -- `compute_customer_coverage` computes and writes nothing.
+    computed = compute_customer_coverage(db, line.well.planning_node.customer)
+    pending_load = {
+        load.to_product_id: load for load in computed.pending_substitute_load
+    }
 
-    out: list[CandidateOut] = []
-    for ts in subs:
-        to_product = db.get(Product, ts.to_product_id)
-        rule = (
-            db.query(CustomerSubstitutionRule)
-            .filter_by(customer_id=customer.id, technical_substitution_id=ts.id)
-            .first()
+    # A property of the LINE, not of any one candidate -- computed once and
+    # stamped on every row. See `SubstitutionCandidateOut.approval_by_date`.
+    abd = approval_by_date(db, line)
+
+    candidates = [
+        SubstitutionCandidateOut.model_validate(c, from_attributes=True)
+        for c in find_candidates(
+            db,
+            line,
+            hard_assigned_by_product=computed.hard_assigned_by_product,
+            pending_load_by_product=pending_load,
         )
-        customer_rule_allowed = bool(rule is not None and rule.allowed)
+    ]
+    for out in candidates:
+        out.approval_by_date_available = abd.available
+        out.approval_by_date = abd.approval_by_date
+        out.still_recoverable = abd.still_recoverable
+        out.approval_by_date_reason = abd.reason
+    return candidates
 
-        free_qty = free_pool(db, bu_id, ts.to_product_id, line.unit)
-        hard_qty = hard_assigned_total(db, bu_id, ts.to_product_id, line.unit)
 
-        verdict_if_applied = shortfall <= 0 or free_qty >= shortfall
-
-        blocked_by: str | None = None
-        if not customer_rule_allowed:
-            blocked_by = "customer"
-        else:
-            # Well-approval blocks if there's an existing PENDING request for
-            # this (line, substitution) — the request exists but is undecided,
-            # regardless of whether stock would already cover the shortfall.
-            pending = (
-                db.query(SubstitutionApproval)
-                .filter_by(
-                    demand_line_id=line.id,
-                    technical_substitution_id=ts.id,
-                    status=SubstitutionApprovalStatus.PENDING,
-                )
-                .first()
+@router.post(
+    "/demand-lines/{demand_line_id}/substitution-approvals",
+    response_model=SubstitutionApprovalOut,
+)
+def create_substitution_approval(
+    demand_line_id: str, body: SubstitutionApprovalIn, db: Session = Depends(get_db)
+):
+    line = _get_line(db, demand_line_id)
+    # Validated here, not trusted: an unknown product id would otherwise
+    # 500 on a real FK database (and quietly write a dangling row on SQLite).
+    for label, pid in (("from_product_id", body.from_product_id),
+                       ("to_product_id", body.to_product_id)):
+        if db.get(Product, pid) is None:
+            raise HTTPException(
+                status_code=404, detail=f"{label} {pid} names no product"
             )
-            if pending is not None:
-                blocked_by = "well-approval"
-            elif not verdict_if_applied and hard_qty > 0 and (free_qty + hard_qty) >= shortfall:
-                blocked_by = "oracle-release"
+    approval = request_approval(db, line, body.from_product_id, body.to_product_id)
+    db.commit()
+    db.refresh(approval)
+    return approval
 
-        out.append(
-            CandidateOut(
-                substitution_id=ts.id,
-                to_product=to_product.name,
-                technical_ok=True,
-                customer_rule_allowed=customer_rule_allowed,
-                free_qty_by_unit=free_qty,
-                hard_assigned_qty=hard_qty,
-                verdict_if_applied=verdict_if_applied,
-                blocked_by=blocked_by,
-            )
+
+@router.post(
+    "/substitution-approvals/{approval_id}/decision",
+    response_model=SubstitutionApprovalOut,
+)
+def decide_substitution_approval(
+    approval_id: str, body: SubstitutionDecisionIn, db: Session = Depends(get_db)
+):
+    existing = db.get(WellSubstitutionApproval, approval_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Substitution approval not found")
+    # A decided approval is FINAL (product-owner decision, 2026-08-12): coverage
+    # has already been recomputed on top of the verdict, so silently re-deciding
+    # would rewrite history under it. Reversal = raise a NEW approval request
+    # (the existing "an Approved verdict beats a later Pending" rule then
+    # governs which one wins).
+    if existing.status != SubstitutionApprovalStatus.PENDING:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"This approval was already decided ({existing.status.value}). "
+                "A decision is final; to reverse it, raise a new approval "
+                "request for the same demand line."
+            ),
         )
-
-    return out
+    approval = decide_approval(db, approval_id, body.approved)
+    # The decision changes the well-layer verdict, so coverage for the affected
+    # well must be recomputed before the response is returned.
+    recompute_well(db, approval.demand_line.well)
+    db.commit()
+    db.refresh(approval)
+    return approval

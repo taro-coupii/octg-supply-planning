@@ -1,125 +1,298 @@
-# C-01R resolved (stage 7): protected via app.main's include_router(dependencies=[...]).
-import datetime
+"""Cross-well coverage grid -- the Coverage Workspace.
 
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
-from sqlalchemy.orm import Session
+Read-only. When the caller asks for non-default status/profile filters the grid
+is recomputed READ-ONLY for exactly those filters (see
+`app.engines.coverage_view`), because the stored `CoverageResult` rows were
+computed under the DEFAULTS and do not answer the question that was asked. The
+response always states which happened, so a projection can never be mistaken for
+the official stored verdict.
+"""
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.orm import Session, joinedload
 
 from app.db import get_db
-from app.engines.allocation import InventoryScopeMissing
-from app.engines.coverage import last_recompute_skips, recompute_all, recompute_customer
-from app.models import Customer, CoverageResult, CoverageVerdict, DemandLine, Well
+from app.engines.coverage import recompute_customer
+from app.engines.coverage_scope import (
+    effective_profile_filter,
+    effective_status_filter,
+)
+from app.engines.coverage_view import (
+    COVERED_LINE_STATUSES,
+    planning_node_path,
+    project_coverage,
+)
+from app.engines.inventory import InventoryNotScoped
+from app.engines.well_dates import sort_by_earliest_ros
+from app.models import (
+    CoverageStatus,
+    Customer,
+    DemandProfile,
+    DemandStatus,
+    PlanningNode,
+    Well,
+)
+from app.schemas import (
+    CoverageGridOut,
+    CoverageGridRowOut,
+    CoverageGridFiltersOut,
+    CoverageRecomputeIn,
+    CoverageRecomputeOut,
+    CoverageRecomputeSkippedOut,
+)
 
-router = APIRouter(prefix="/coverage")
+router = APIRouter(prefix="/coverage", tags=["coverage"])
 
-# spec 裁定C-1: NotEvaluated is a real state — never folded into 0/Covered.
-NOT_EVALUATED = "NotEvaluated"
-
-_SEVERITY = {
-    CoverageVerdict.COVERED.value: 0,
-    CoverageVerdict.COVERED_VIA_SUBSTITUTE.value: 1,
-    CoverageVerdict.PENDING_APPROVAL.value: 2,
-    CoverageVerdict.UNCOVERED.value: 3,
-    CoverageVerdict.UNRECOVERABLE.value: 4,
-    NOT_EVALUATED: 5,
-}
-
-
-class RecomputeIn(BaseModel):
-    customer_id: str | None = None
-
-
-class SkippedCustomerOut(BaseModel):
-    name: str
-    reason: str
-
-
-class RecomputeOut(BaseModel):
-    computed: int
-    skipped_customers: list[SkippedCustomerOut]
-
-
-@router.post("/recompute", response_model=RecomputeOut)
-def post_recompute(body: RecomputeIn, db: Session = Depends(get_db)):
-    if body.customer_id:
-        customer = db.get(Customer, body.customer_id)
-        if customer is None:
-            raise HTTPException(status_code=404, detail="Customer not found")
-        try:
-            results = recompute_customer(db, body.customer_id)
-        except InventoryScopeMissing as exc:
-            raise HTTPException(status_code=422, detail=str(exc))
-        return RecomputeOut(computed=len(results), skipped_customers=[])
-
-    outcome = recompute_all(db)
-    return RecomputeOut(
-        computed=outcome["computed"],
-        skipped_customers=[
-            SkippedCustomerOut(name=name, reason=reason) for name, reason in outcome["skipped_customers"]
-        ],
-    )
-
-
-class WellRollupOut(BaseModel):
-    id: str
-    name: str
-    status: str
-    line_count: int
-    verdict_rollup: dict[str, int]
-    worst_verdict: str | None
-
-
-class CustomerGridOut(BaseModel):
-    id: str
-    name: str
-    policy: str
-    wells: list[WellRollupOut]
-
-
-class CoverageGridOut(BaseModel):
-    customers: list[CustomerGridOut]
-    skipped_customers: list[SkippedCustomerOut]
-    computed_at_min: datetime.datetime | None
-    computed_at_max: datetime.datetime | None
+_COVERED_VALUES = {s.value for s in COVERED_LINE_STATUSES}
 
 
 @router.get("", response_model=CoverageGridOut)
-def get_coverage_grid(db: Session = Depends(get_db)):
-    """Reads stored CoverageResult rows only — never recomputes here."""
-    all_results = db.query(CoverageResult).all()
-    verdict_by_line_id = {r.demand_line_id: r.verdict.value for r in all_results}
+def coverage_grid(
+    db: Session = Depends(get_db),
+    customer_id: str | None = None,
+    coverage_status: list[str] | None = Query(default=None),
+    status: list[DemandStatus] | None = Query(default=None),
+    profile: list[DemandProfile] | None = Query(default=None),
+):
+    """One row per well: counts of in-scope and covered lines, plus the rollup.
 
-    computed_ats = [r.computed_at for r in all_results]
-    computed_at_min = min(computed_ats) if computed_ats else None
-    computed_at_max = max(computed_ats) if computed_ats else None
+    `status` / `profile` are the Coverage Workspace's filter toggles. Omit them to
+    get the platform defaults (Confirmed only, Primary + Contingency) and therefore the
+    OFFICIAL stored verdicts.
 
-    customers_out: list[CustomerGridOut] = []
-    for customer in db.query(Customer).order_by(Customer.name).all():
-        wells_out: list[WellRollupOut] = []
-        for well in db.query(Well).filter_by(customer_id=customer.id).order_by(Well.name).all():
-            lines = db.query(DemandLine).filter_by(well_id=well.id).all()
-            rollup: dict[str, int] = {}
-            for line in lines:
-                verdict = verdict_by_line_id.get(line.id, NOT_EVALUATED)
-                rollup[verdict] = rollup.get(verdict, 0) + 1
-            worst_verdict = max(rollup, key=lambda v: _SEVERITY[v]) if rollup else None
-            wells_out.append(
-                WellRollupOut(
-                    id=well.id,
-                    name=well.name,
-                    status=well.demand_status.value,
-                    line_count=len(lines),
-                    verdict_rollup=rollup,
-                    worst_verdict=worst_verdict,
-                )
+    Passing anything else triggers a read-only recompute for those filters and
+    sets `filters.recomputed_read_only = true`. That is deliberate rather than
+    convenient: the stored rows were computed under the defaults, and the filters
+    do not merely hide lines -- they change WHICH lines compete for the same
+    inventory, so a line present under both filter sets can legitimately have a
+    different verdict under each. Returning default-filter rows under a
+    non-default label would be the stale-coverage defect again, in a new place.
+    Nothing is persisted by such a request; the official verdicts are untouched.
+
+    `coverage_status` filters on the WELL ROLLUP ("Covered", "Uncovered", or
+    "Unevaluated" for a well with no in-scope demand at all).
+    """
+    projection = project_coverage(db, status_filter=status, profile_filter=profile)
+
+    query = db.query(Well).options(
+        joinedload(Well.planning_node).joinedload(PlanningNode.customer)
+    )
+    if customer_id is not None:
+        query = query.join(
+            PlanningNode, Well.planning_node_id == PlanningNode.id
+        ).filter(PlanningNode.customer_id == customer_id)
+    # Fetched by name for a deterministic base order; the ROWS are then sorted by
+    # earliest ROS (see below), with the name as the tie-break, so this ordering
+    # only decides ties.
+    wells = query.order_by(Well.name).all()
+
+    # In-scope line counts come from the SAME projection as the verdicts, so the
+    # denominator and the numerator can never describe different filter sets.
+    in_scope_by_well: dict[str, int] = {}
+    covered_by_well: dict[str, int] = {}
+    for line in projection.lines.values():
+        in_scope_by_well[line.well_id] = in_scope_by_well.get(line.well_id, 0) + 1
+        if line.status in _COVERED_VALUES:
+            covered_by_well[line.well_id] = covered_by_well.get(line.well_id, 0) + 1
+
+    rows: list[CoverageGridRowOut] = []
+    for well in wells:
+        node = well.planning_node
+        rollup = projection.well_rollups.get(well.id)
+        in_scope = in_scope_by_well.get(well.id, 0)
+        # From the projection, so under non-default filters these are the dates for
+        # the filters actually requested rather than the stored defaults. See
+        # `CoverageProjection.well_dates`.
+        dates = projection.well_dates.get(well.id)
+        rows.append(
+            CoverageGridRowOut(
+                well_id=well.id,
+                well_name=well.name,
+                planning_node_id=node.id if node else None,
+                planning_node_path=planning_node_path(node),
+                customer_id=node.customer_id if node else None,
+                customer_name=node.customer.name if node and node.customer else None,
+                # Planner-set input, so an unevaluated row can name its own cause
+                # rather than only its consequence.
+                demand_status=well.demand_status.value,
+                in_scope_line_count=in_scope,
+                covered_line_count=covered_by_well.get(well.id, 0),
+                # A well with no in-scope demand is UNEVALUATED, not covered and
+                # not uncovered. Presenting it as either would be a claim the
+                # engine never made.
+                coverage_status=rollup,
+                evaluated=rollup is not None,
+                earliest_ros_date=dates.earliest_ros_date if dates else None,
+                first_runout_date=dates.first_runout_date if dates else None,
             )
-        customers_out.append(
-            CustomerGridOut(id=customer.id, name=customer.name, policy=customer.allocation_policy.value, wells=wells_out)
         )
 
+    # Sorted by earliest ROS ascending, server-side, by the same helper the Home
+    # Dashboard and GET /wells use -- so the three screens agree on the order rather
+    # than each sorting to its own taste. Applied BEFORE the coverage_status filter
+    # below, so filtering removes rows without reordering the survivors.
+    rows = sort_by_earliest_ros(rows)
+
+    if coverage_status:
+        wanted = {s.strip().lower() for s in coverage_status}
+        allowed = {
+            CoverageStatus.COVERED.value.lower(),
+            CoverageStatus.UNCOVERED.value.lower(),
+            "unevaluated",
+        }
+        unknown = wanted - allowed
+        if unknown:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "coverage_status must be one of Covered, Uncovered, "
+                    f"Unevaluated (well rollup values); got {sorted(unknown)}"
+                ),
+            )
+        rows = [
+            row
+            for row in rows
+            if (row.coverage_status or "unevaluated").lower() in wanted
+        ]
+
     return CoverageGridOut(
-        customers=customers_out,
-        skipped_customers=[SkippedCustomerOut(**row) for row in last_recompute_skips(db)],
-        computed_at_min=computed_at_min,
-        computed_at_max=computed_at_max,
+        verdicts_computed_from=projection.verdicts_computed_from,
+        verdicts_computed_to=projection.verdicts_computed_to,
+        filters=CoverageGridFiltersOut(
+            status=sorted(s.value for s in projection.status_filter),
+            profile=sorted(p.value for p in projection.profile_filter),
+            are_default=projection.filters_are_default,
+            recomputed_read_only=projection.recomputed_read_only,
+            skipped_customers=list(projection.skipped_customers),
+            explanation=(
+                "Official stored coverage verdicts, computed under the platform "
+                "default filters."
+                if projection.filters_are_default
+                else (
+                    "PROJECTION. These filters differ from the platform defaults, "
+                    "so coverage was recomputed read-only for exactly the filters "
+                    "requested. Nothing was saved and the official stored verdicts "
+                    "are unchanged. Stored rows were not reused because the filters "
+                    "change which demand lines compete for the same inventory, not "
+                    "merely which ones are displayed."
+                )
+            ),
+        ),
+        well_count=len(rows),
+        rows=rows,
+    )
+
+
+@router.post("/recompute", response_model=CoverageRecomputeOut)
+def recompute_coverage(
+    payload: CoverageRecomputeIn | None = None,
+    db: Session = Depends(get_db),
+):
+    """Rewrite the stored coverage verdicts. Every customer, or one named customer.
+
+    THE TRIGGER C-08 SAID WAS MISSING
+    =================================
+    `CoverageResult` is written only as a side effect of something happening -- a
+    revision applied, an approval decided, a well status changed, inventory edited,
+    a substitution registered. That is normally right: the verdict follows the fact
+    that changed it. It leaves one hole, and it is the hole this platform actually
+    fell into repeatedly (see HANDOFF §7): after an out-of-band data change, or after
+    an ENGINE fix, the code is correct and the database still holds yesterday's
+    answer, with no legal way to ask for a new one short of inventing a write.
+    `computed_at` on the grid already makes that staleness visible; this makes it
+    fixable.
+
+    IT WRITES THE OFFICIAL VERDICT, SO IT TAKES NO FILTERS
+    =====================================================
+    The official verdict is by definition the one computed under the platform's
+    default scope, so this endpoint reads that scope and passes it -- it does not
+    accept status/profile parameters. The question "what would the verdict be under a
+    different scope" is answered read-only by `app.engines.coverage_view`, which
+    recomputes, yields and then ROLLS BACK precisely so a projection can never be
+    mistaken for, or written over, the stored answer. Letting a caller persist an
+    arbitrary scope here would destroy that distinction.
+
+    PER-CUSTOMER ISOLATION, PER-CUSTOMER COMMIT
+    ===========================================
+    Each customer is recomputed and committed on its own. That is deliberate and it
+    is NOT what the read path does: `coverage_view._recompute_all` runs every customer
+    inside one transaction that its callers always roll back, and its docstring warns
+    that a failed customer can leave partial in-transaction writes. Safe there,
+    unacceptable here -- this path commits, so a half-written customer would become
+    the stored truth. Committing per customer means a customer with incomplete
+    inventory facts costs only itself: it keeps whatever verdicts it already had, and
+    is NAMED in `skipped_customers` rather than being silently dropped or taking every
+    other customer's recompute down with it. The same C-07 lesson, applied to writes.
+    """
+    body = payload or CoverageRecomputeIn()
+
+    if body.customer_id is not None:
+        customer = db.get(Customer, body.customer_id)
+        if customer is None:
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    f"no customer with id {body.customer_id!r}. Nothing was recomputed."
+                ),
+            )
+        customers = [customer]
+    else:
+        customers = db.query(Customer).order_by(Customer.name).all()
+
+    status_filter = effective_status_filter(db)
+    profile_filter = effective_profile_filter(db)
+
+    computed_customers = 0
+    computed_lines = 0
+    skipped: list[CoverageRecomputeSkippedOut] = []
+
+    for customer in customers:
+        try:
+            result = recompute_customer(
+                db,
+                customer,
+                status_filter=status_filter,
+                profile_filter=profile_filter,
+            )
+        except InventoryNotScoped as exc:
+            # Roll back only this customer's partial work, then carry on. The next
+            # customer starts from a clean session.
+            db.rollback()
+            skipped.append(
+                CoverageRecomputeSkippedOut(
+                    customer_id=customer.id,
+                    name=customer.name,
+                    reason=str(exc),
+                )
+            )
+            continue
+        db.commit()
+        computed_customers += 1
+        computed_lines += len(result.by_line)
+
+    scope = (
+        f"status [{', '.join(sorted(s.value for s in status_filter))}] / "
+        f"profile [{', '.join(sorted(p.value for p in profile_filter))}]"
+    )
+    if skipped:
+        note = (
+            f"Recomputed {computed_customers} customer(s) and {computed_lines} demand "
+            f"line(s) under the platform default scope: {scope}. "
+            f"{len(skipped)} customer(s) could NOT be evaluated and keep the verdicts "
+            "they already had -- each is named above with the reason. This is "
+            "isolation, not partial success: a customer whose inventory facts are "
+            "incomplete costs only itself."
+        )
+    else:
+        note = (
+            f"Recomputed {computed_customers} customer(s) and {computed_lines} demand "
+            f"line(s) under the platform default scope: {scope}. These are now the "
+            "official stored verdicts."
+        )
+
+    return CoverageRecomputeOut(
+        computed_customers=computed_customers,
+        computed_lines=computed_lines,
+        skipped_customers=skipped,
+        note=note,
     )

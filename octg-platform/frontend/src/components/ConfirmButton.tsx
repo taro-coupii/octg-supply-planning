@@ -1,41 +1,68 @@
 import { useEffect, useRef, useState } from "react";
-import type { ConfirmState } from "../lib/confirm";
-import { ARM_TIMEOUT_MS, press } from "../lib/confirm";
 
-type Props = {
+/**
+ * Two-step button for FINAL decisions.
+ *
+ * A substitution decision cannot be re-decided (the API 409s a second
+ * decision; reversal means raising a new request), yet it used to commit on a
+ * single click with no confirmation anywhere -- QA 2026-08-14, decided by the
+ * product owner. The first click ARMS the button (label changes to
+ * `confirmLabel`, styling shifts); the second click within the window commits.
+ * The armed state disarms by itself after a few seconds, and on blur, so an
+ * accidental click melts away instead of lying in wait.
+ *
+ * Deliberately not window.confirm(): a native modal reads as an error, blocks
+ * the whole tab, and cannot be styled to the calm palette. Two-step keeps the
+ * decision in place, next to the row it affects.
+ */
+export default function ConfirmButton({
+  label,
+  confirmLabel,
+  onConfirm,
+  disabled,
+  className,
+}: {
   label: string;
-  armedLabel: string;
+  confirmLabel: string;
   onConfirm: () => void;
+  disabled?: boolean;
   className?: string;
-};
+}) {
+  const [armed, setArmed] = useState(false);
+  const timer = useRef<number | null>(null);
 
-export default function ConfirmButton({ label, armedLabel, onConfirm, className }: Props) {
-  const [state, setState] = useState<ConfirmState>("idle");
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (timer.current !== null) window.clearTimeout(timer.current);
+    },
+    []
+  );
 
-  useEffect(() => {
-    if (state === "armed") {
-      timer.current = setTimeout(() => setState("idle"), ARM_TIMEOUT_MS);
-    }
-    return () => {
-      if (timer.current) clearTimeout(timer.current);
-    };
-  }, [state]);
-
-  const handleClick = () => {
-    const next = press(state);
-    setState(next.state);
-    if (next.fire) onConfirm();
+  const disarm = () => {
+    if (timer.current !== null) window.clearTimeout(timer.current);
+    timer.current = null;
+    setArmed(false);
   };
 
   return (
     <button
       type="button"
-      className={`confirm-btn ${state === "armed" ? "armed" : ""} ${className ?? ""}`}
-      onClick={handleClick}
-      onBlur={() => setState("idle")}
+      className={`${className ?? ""}${armed ? " confirm-armed" : ""}`}
+      disabled={disabled}
+      aria-live="polite"
+      onBlur={disarm}
+      onClick={() => {
+        if (!armed) {
+          setArmed(true);
+          if (timer.current !== null) window.clearTimeout(timer.current);
+          timer.current = window.setTimeout(() => setArmed(false), 4000);
+          return;
+        }
+        disarm();
+        onConfirm();
+      }}
     >
-      {state === "armed" ? armedLabel : label}
+      {armed ? confirmLabel : label}
     </button>
   );
 }

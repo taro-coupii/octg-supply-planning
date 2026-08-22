@@ -1,148 +1,172 @@
 import { useEffect, useState } from "react";
-import { Link, useSearchParams } from "react-router-dom";
-import Breadcrumbs from "../components/Breadcrumbs";
-import Freshness from "../components/Freshness";
-import { apiDownload, apiGet } from "../lib/api";
-import { writeParam } from "../lib/urlState";
-import type { Product } from "./admin/shared";
-import { errorMessage } from "./admin/shared";
+import { Link } from "react-router-dom";
+import { api, MrpRecommendation } from "../api/client";
+import { LeadTimeCell } from "../components/LeadTime";
+import LoadError from "../components/LoadError";
+import ReasonText from "../components/ReasonText";
+import ScopeNote from "../components/ScopeNote";
 
-type Balance = { company: number; owned: number };
-type Month = {
-  month: string;
-  opening: Balance;
-  receipts_booked: number;
-  receipts_recommended: number;
-  issues: number;
-  closing: Balance;
-};
-type RunoutMonths = { baseline: string | null; with_recommended: string | null; on_order: string | null };
-type ProductSummary = {
-  product: string;
-  unit: string;
-  opening: Balance;
-  runout_months: RunoutMonths;
-  months: Month[];
-  on_order_undated: number;
-};
-type Scope = { statuses: string[]; profiles: string[] };
-type MrpSummaryResp = { rows: ProductSummary[]; scope: Scope };
+// Dates from the MRP engine are plain calendar dates (YYYY-MM-DD) or naive
+// datetimes. Slicing avoids the timezone shift `new Date("2026-11-01")` causes.
+export function formatDay(value: string) {
+  const [y, m, d] = value.slice(0, 10).split("-");
+  return `${y}-${m}-${d}`;
+}
 
-const HORIZONS = [12, 24, 36];
+function todayIso() {
+  const now = new Date();
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+}
+
+export function isPastDay(value: string) {
+  return value.slice(0, 10) < todayIso();
+}
+
+function RecommendationTable({ rows }: { rows: MrpRecommendation[] }) {
+  return (
+    <div className="table-scroll">
+      <table className="mrp-table">
+        <thead>
+          <tr>
+            <th>Product</th>
+            <th>Quantity</th>
+            <th>ROS</th>
+            <th>Required Ship Date</th>
+            <th>Recommended Order Date</th>
+            <th>Lead Time</th>
+            <th>Reason</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={`${r.product_id}-${r.unrecoverable}`}>
+              <td>
+                <Link to={`/mrp/by-item/${r.product_id}`}>
+                  {r.product_description ?? r.product_id}
+                </Link>
+              </td>
+              <td className="num">{r.quantity.toLocaleString()}</td>
+              <td className="num">{formatDay(r.ros_date)}</td>
+              <td className="num">{formatDay(r.required_ship_date)}</td>
+              <td className="num">
+                {formatDay(r.recommended_order_date)}
+                {isPastDay(r.recommended_order_date) && (
+                  <div className="date-past">
+                    date has passed — ordering now cannot meet ROS
+                  </div>
+                )}
+              </td>
+              {/*
+                Not `{r.lead_time_months} mo`. That scalar is 0 when the lead
+                time is NOT MODELLED, and "0 mo" reads as instant delivery — so
+                the least-known product would look like the safest row here.
+                LeadTimeCell shows the four-dimension breakdown and refuses to
+                print a number the model has not got.
+              */}
+              <td className="lt-td">
+                <LeadTimeCell lead={r.lead_time} fallbackMonths={r.lead_time_months} />
+              </td>
+              <td className="mrp-reason">
+                <ReasonText reason={r.reason} />
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
 
 export default function MrpSummary() {
-  const [params, setParams] = useSearchParams();
-  const horizon = Number(params.get("horizon") ?? "12") || 12;
-
-  const [products, setProducts] = useState<Product[]>([]);
-  const [data, setData] = useState<MrpSummaryResp | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [fetchedAt, setFetchedAt] = useState<Date | null>(null);
+  const [rows, setRows] = useState<MrpRecommendation[] | null>(null);
+  const [error, setError] = useState<unknown>(null);
 
   useEffect(() => {
-    apiGet<Product[]>("/products")
-      .then(setProducts)
-      .catch((e: Error) => setError(e.message));
+    api.getMrpSummary().then(setRows).catch(setError);
   }, []);
 
-  const load = () => {
-    apiGet<MrpSummaryResp>(`/mrp/summary?horizon=${horizon}`)
-      .then((d) => {
-        setData(d);
-        setFetchedAt(new Date());
-        setError(null);
-      })
-      // Keep previously-loaded data on screen; only surface the error.
-      .catch((e) => setError(errorMessage(e)));
-  };
+  if (error) return <LoadError what="MRP summary" error={error} />;
+  if (!rows) return <p>Loading...</p>;
 
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(load, [horizon]);
-
-  const setHorizon = (value: number) => {
-    setParams(writeParam(params, "horizon", String(value)));
-  };
-
-  const productName = (id: string): string => products.find((p) => p.id === id)?.name ?? "…";
-
-  const [exporting, setExporting] = useState(false);
-  const exportXlsx = () => {
-    setExporting(true);
-    apiDownload(`/mrp/export?horizon=${horizon}`, `mrp-summary-${horizon}mo.xlsx`)
-      .catch((e: Error) => setError(e.message))
-      .finally(() => setExporting(false));
-  };
+  // Two genuinely different actions: place an order vs. escalate. Splitting them
+  // keeps an unrecoverable line from reading as something a buyer can just order.
+  const orderable = rows.filter((r) => !r.unrecoverable);
+  const escalate = rows.filter((r) => r.unrecoverable);
 
   return (
     <div>
-      <Breadcrumbs items={[{ label: "Home", to: "/" }, { label: "MRP" }]} />
-      <div className="card">
-        <div className="page-header">
-          <h1>MRP Summary</h1>
-          <Freshness fetchedAt={fetchedAt} onRefresh={load} />
-        </div>
+      <div className="page-head">
+        <h1>MRP Summary</h1>
+        {/*
+          A plain link, so the browser's own download machinery handles the
+          Content-Disposition filename and the save dialog — the same pattern
+          DemandImport.tsx uses for its template download. There is deliberately
+          one download pattern in this app rather than a second hand-rolled
+          fetch → Blob → object URL → synthetic click.
 
-        {data && (
-          <p className="hint">
-            Computed under Administration default scope: {data.scope.statuses.join(", ")} /{" "}
-            {data.scope.profiles.join(", ")}
-          </p>
-        )}
-
-        {error && <p className="inline-error">{error}</p>}
-
-        <div className="filters">
-          <label>
-            Horizon (months)
-            <select value={horizon} onChange={(e) => setHorizon(Number(e.target.value))}>
-              {HORIZONS.map((h) => (
-                <option key={h} value={h}>
-                  {h}
-                </option>
-              ))}
-            </select>
-          </label>
-          <button type="button" className="confirm-btn" onClick={exportXlsx} disabled={exporting}>
-            {exporting ? "Exporting…" : "Export xlsx"}
-          </button>
-        </div>
-
-        {data && (
-          <div className="table-scroll">
-          <table className="admin-table">
-            <thead>
-              <tr>
-                <th>Product</th>
-                <th>Unit</th>
-                <th>Runout — baseline</th>
-                <th>Runout — with recommended</th>
-                <th>Runout — on order</th>
-                <th>On order (undated)</th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.rows.length === 0 && (
-                <tr>
-                  <td colSpan={6}>—</td>
-                </tr>
-              )}
-              {data.rows.map((row) => (
-                <tr key={row.product}>
-                  <td>
-                    <Link to={`/mrp/items/${row.product}`}>{productName(row.product)}</Link>
-                  </td>
-                  <td>{row.unit}</td>
-                  <td className="num">{row.runout_months.baseline ?? "—"}</td>
-                  <td className="num">{row.runout_months.with_recommended ?? "—"}</td>
-                  <td className="num">{row.runout_months.on_order ?? "—"}</td>
-                  <td className="num">{row.on_order_undated ? `${row.on_order_undated} ${row.unit}` : "—"}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          </div>
-        )}
+          No customer argument: this screen has no customer filter (it calls
+          api.getMrpSummary() unscoped), so the file must be the same
+          system-wide scope the tables below are showing. `api.mrpExportUrl`
+          takes an optional customerId for the day this screen grows a filter —
+          it is left off here rather than defaulted to some customer, which
+          would silently hand the planner a narrower file than the screen.
+        */}
+        <a className="btn-download" href={api.mrpExportUrl()}>
+          Export to Excel
+        </a>
       </div>
+      <p>
+        What should we order? Expand any lead time to see the four attribute
+        dimensions it is built from.
+      </p>
+      <ScopeNote />
+      <p className="mrp-export-note">
+        <strong>Export to Excel</strong> downloads this list as tab 1 of an .xlsx
+        workbook — orderable and unrecoverable rows kept apart, as here — with the
+        By Item justification behind every row (demand lines, inventory position,
+        runout projection, lead-time breakdown) on the tabs after it.
+      </p>
+      {rows.some((r) => r.lead_time && !r.lead_time.modelled) && (
+        <p className="lt-lead-warning">
+          Some products below have a lead time that is <strong>not modelled</strong>.
+          That is unknown, not zero — their order dates cannot be trusted and the
+          missing attribute dimensions are named in the row.
+        </p>
+      )}
+
+      <section className="mrp-section">
+        <h2 className="mrp-section-title">
+          Orderable <span className="mrp-count">{orderable.length}</span>
+        </h2>
+        <p className="mrp-section-note">
+          Lead time still fits. Place the mill order by the recommended order date.
+        </p>
+        {orderable.length === 0 ? (
+          <div className="card">
+            <div className="empty">No orderable recommendations.</div>
+          </div>
+        ) : (
+          <RecommendationTable rows={orderable} />
+        )}
+      </section>
+
+      <section className="mrp-section mrp-section-escalate">
+        <h2 className="mrp-section-title">
+          Unrecoverable — escalate <span className="mrp-count">{escalate.length}</span>
+        </h2>
+        <p className="mrp-section-note">
+          The recommended order date has already passed: these cannot be met by mill
+          order even if ordered today. Rescope ROS, borrow, or source externally.
+        </p>
+        {escalate.length === 0 ? (
+          <div className="card">
+            <div className="empty">Nothing unrecoverable.</div>
+          </div>
+        ) : (
+          <RecommendationTable rows={escalate} />
+        )}
+      </section>
     </div>
   );
 }

@@ -1,299 +1,382 @@
-# C-01R resolved (stage 7): protected via app.main's include_router(dependencies=[...]).
-"""spec §シナリオAPI. CRUD sans DELETE on scenarios (裁定 E-4: intentionally no
-DELETE endpoint — invariant 6). Overrides add/delete Draft-only. preview
-(E-3) and apply (E-4) delegate to app.engines.scenario.
+"""Scenario Planning endpoints -- Phase 4.
+
+Which routes write, and which cannot
+------------------------------------
+Only three handlers here reach production data, and they are the obvious three:
+POST /scenarios (creates a scenario), the override add/remove pair, and
+POST /scenarios/{id}/apply. Everything else is read-only.
+
+GET /scenarios/{id}/preview in particular does NOT call `db.commit()`, exactly as
+GET /analysis/cross-customer-sharing does not. The engine behind it writes nothing
+(see `app.engines.scenario` for the four mechanisms enforcing that) so there is
+nothing to commit -- and no path by which a GET could overwrite the official
+coverage answer.
+
+GET /scenarios also runs a preview per row, to produce the headline coverage
+delta the list screen shows. Same reasoning: reads only. A preview that raises
+for one scenario is caught and reported on that row alone, so one bad scenario
+cannot blank the whole list.
+
+Scenarios are SHARED
+--------------------
+No handler filters by user and none accepts a caller identity. `created_by` is
+attribution the client supplies for display. There is no per-user ownership or
+visibility model to build here, deliberately -- see app.models.scenario.Scenario.
 """
 
-from __future__ import annotations
-
-import datetime
-import json
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.engines.scenario import SupplyOverrideRejected, apply_scenario, preview_scenario
+from app.engines.overrides import (
+    OVERRIDE_ENUM_VALUES,
+    OVERRIDE_FIELDS,
+    SUPPLY_KINDS,
+    UNMODELLED_KINDS,
+    OverrideError,
+    validate,
+)
+from app.engines.scenario import (
+    ScenarioImmutable,
+    assert_mutable,
+    assert_target_in_scope,
+    preview,
+)
+from app.engines.scenario_apply import ScenarioNotApplicable, apply_to_base_plan
 from app.models import (
-    DemandLine,
-    InventoryAssignment,
-    InventoryOnOrder,
-    Product,
+    Customer,
+    EDITABLE_SCENARIO_STATUSES,
     Scenario,
     ScenarioOverride,
-    ScenarioOverrideKind,
     ScenarioStatus,
-    SubstitutionApproval,
-    Well,
+)
+from app.schemas import (
+    OverrideFieldsOut,
+    ScenarioApplyOut,
+    ScenarioDetailOut,
+    ScenarioImpactOut,
+    ScenarioIn,
+    ScenarioOverrideIn,
+    ScenarioOverrideOut,
+    ScenarioPatch,
+    ScenarioSummaryOut,
 )
 
-router = APIRouter(prefix="/scenarios")
+router = APIRouter(prefix="/scenarios", tags=["scenarios"])
 
 
-# --- payload validation per override kind -----------------------------------
+# --------------------------------------------------------------------------
+# Helpers
+# --------------------------------------------------------------------------
 
 
-def _validate_payload(kind: ScenarioOverrideKind, payload: dict) -> None:
-    if kind == ScenarioOverrideKind.QUANTITY:
-        value = payload.get("value")
-        if not isinstance(value, (int, float)) or value <= 0:
-            raise HTTPException(status_code=422, detail="quantity override requires numeric payload.value > 0")
-    elif kind == ScenarioOverrideKind.ROS_DATE:
-        value = payload.get("value")
-        if not isinstance(value, str):
-            raise HTTPException(status_code=422, detail="ros_date override requires payload.value as ISO date string")
+def _get_scenario(db: Session, scenario_id: str) -> Scenario:
+    scenario = db.get(Scenario, scenario_id)
+    if scenario is None:
+        raise HTTPException(status_code=404, detail="Scenario not found")
+    return scenario
+
+
+def _require_mutable(scenario: Scenario) -> None:
+    """409 rather than 400: the request is well formed, the scenario's STATE
+    forbids it. See app.models.scenario.Scenario for why Applied is terminal."""
+    try:
+        assert_mutable(scenario)
+    except ScenarioImmutable as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+
+def _summary(
+    db: Session, scenario: Scenario, with_delta: bool = True
+) -> ScenarioSummaryOut:
+    """Serialise one scenario, optionally with its headline coverage delta.
+
+    The delta comes from the read-only preview, so the list screen's headline
+    figure is produced by the same engine as the editor's detail -- there is no
+    second, cheaper approximation that could disagree with it.
+    """
+    delta_wells: int | None = None
+    delta_lines: int | None = None
+    error: str | None = None
+    if with_delta:
         try:
-            datetime.date.fromisoformat(value)
-        except ValueError:
-            raise HTTPException(status_code=422, detail="ros_date override payload.value must be an ISO date")
-    elif kind == ScenarioOverrideKind.WELL_STATUS:
-        value = payload.get("value")
-        valid = {"Planned", "Budgeted", "Confirmed"}
-        if value not in valid:
-            raise HTTPException(status_code=422, detail=f"well_status override payload.value must be one of {valid}")
-    elif kind == ScenarioOverrideKind.PO_ARRIVAL:
-        value = payload.get("value")
-        if value is not None:
-            if not isinstance(value, str):
-                raise HTTPException(status_code=422, detail="po_arrival override payload.value must be an ISO date or null")
-            try:
-                datetime.date.fromisoformat(value)
-            except ValueError:
-                raise HTTPException(status_code=422, detail="po_arrival override payload.value must be an ISO date")
-    elif kind == ScenarioOverrideKind.HARD_RELEASE:
-        pass  # no payload fields required
-    elif kind == ScenarioOverrideKind.APPROVAL_FLIP:
-        if "customer_approved" in payload and not isinstance(payload["customer_approved"], bool):
-            raise HTTPException(status_code=422, detail="approval_flip payload.customer_approved must be boolean")
-        if "well_approved" in payload and not isinstance(payload["well_approved"], bool):
-            raise HTTPException(status_code=422, detail="approval_flip payload.well_approved must be boolean")
-        if "status" in payload and payload["status"] not in {"Pending", "Approved", "Rejected"}:
-            raise HTTPException(status_code=422, detail="approval_flip payload.status invalid")
+            impact = preview(db, scenario)
+            delta_wells = impact.changed_well_count
+            delta_lines = impact.changed_line_count
+        except Exception as exc:  # noqa: BLE001 -- one bad row must not blank the list
+            error = f"{type(exc).__name__}: {exc}"
 
-
-def _target_exists(db: Session, kind: ScenarioOverrideKind, target_id: str) -> bool:
-    if kind in (ScenarioOverrideKind.QUANTITY, ScenarioOverrideKind.ROS_DATE):
-        return db.get(DemandLine, target_id) is not None
-    if kind == ScenarioOverrideKind.WELL_STATUS:
-        return db.get(Well, target_id) is not None
-    if kind == ScenarioOverrideKind.PO_ARRIVAL:
-        return db.get(InventoryOnOrder, target_id) is not None
-    if kind == ScenarioOverrideKind.HARD_RELEASE:
-        return db.get(InventoryAssignment, target_id) is not None
-    if kind == ScenarioOverrideKind.APPROVAL_FLIP:
-        return db.get(SubstitutionApproval, target_id) is not None
-    return False
-
-
-def _target_name(db: Session, kind: ScenarioOverrideKind, target_id: str) -> str:
-    """Resolve a human-readable name for `target_id` — API responses must
-    never surface a bare UUID (spec §データモデル note)."""
-    if kind in (ScenarioOverrideKind.QUANTITY, ScenarioOverrideKind.ROS_DATE):
-        line = db.get(DemandLine, target_id)
-        if line is None:
-            return target_id
-        well = db.get(Well, line.well_id)
-        product = db.get(Product, line.product_id)
-        well_name = well.name if well else target_id
-        product_name = product.name if product else line.product_id
-        return f"{well_name} / {product_name}"
-    if kind == ScenarioOverrideKind.WELL_STATUS:
-        well = db.get(Well, target_id)
-        return well.name if well else target_id
-    if kind == ScenarioOverrideKind.PO_ARRIVAL:
-        po = db.get(InventoryOnOrder, target_id)
-        if po is None:
-            return target_id
-        product = db.get(Product, po.product_id)
-        return product.name if product else po.product_id
-    if kind == ScenarioOverrideKind.HARD_RELEASE:
-        assignment = db.get(InventoryAssignment, target_id)
-        if assignment is None:
-            return target_id
-        product = db.get(Product, assignment.product_id)
-        return product.name if product else assignment.product_id
-    if kind == ScenarioOverrideKind.APPROVAL_FLIP:
-        approval = db.get(SubstitutionApproval, target_id)
-        if approval is None:
-            return target_id
-        well = db.get(Well, approval.well_id)
-        return well.name if well else target_id
-    return target_id
-
-
-# --- schemas ------------------------------------------------------------
-
-
-class ScenarioCreateIn(BaseModel):
-    name: str
-
-
-class ScenarioOut(BaseModel):
-    id: str
-    name: str
-    created_at: datetime.datetime
-    status: str
-    applied_at: datetime.datetime | None
-
-
-def _scenario_out(row: Scenario) -> ScenarioOut:
-    return ScenarioOut(
-        id=row.id,
-        name=row.name,
-        created_at=row.created_at,
-        status=row.status.value,
-        applied_at=row.applied_at,
+    return ScenarioSummaryOut(
+        id=scenario.id,
+        name=scenario.name,
+        description=scenario.description,
+        customer_id=scenario.customer_id,
+        customer_name=scenario.customer.name,
+        status=scenario.status,
+        created_by=scenario.created_by,
+        created_at=scenario.created_at,
+        updated_at=scenario.updated_at,
+        applied_at=scenario.applied_at,
+        override_count=len(scenario.overrides),
+        coverage_delta_wells=delta_wells,
+        coverage_delta_lines=delta_lines,
+        preview_error=error,
     )
 
 
-class OverrideOut(BaseModel):
-    id: str
-    kind: str
-    target_id: str
-    target_name: str
-    payload: dict
-    created_at: datetime.datetime
+# --------------------------------------------------------------------------
+# The override vocabulary
+# --------------------------------------------------------------------------
 
 
-def _override_out(db: Session, row: ScenarioOverride) -> OverrideOut:
-    return OverrideOut(
-        id=row.id,
-        kind=row.kind.value,
-        target_id=row.target_id,
-        target_name=_target_name(db, row.kind, row.target_id),
-        payload=json.loads(row.payload),
-        created_at=row.created_at,
+@router.get("/override-fields", response_model=OverrideFieldsOut)
+def get_override_fields():
+    """What may be overridden, straight from the engine.
+
+    Served so the editor's field pickers and value types cannot drift from
+    `app.engines.overrides.OVERRIDE_FIELDS`. A hardcoded copy in the frontend
+    would be a second definition of the override vocabulary, and the frontend
+    would be the one that got it wrong.
+
+    Declared BEFORE /{scenario_id} so the literal path is not swallowed by the
+    parameterised one.
+    """
+    return OverrideFieldsOut(
+        fields={
+            kind.value: dict(fields) for kind, fields in OVERRIDE_FIELDS.items()
+        },
+        enum_values={
+            f"{kind.value}.{field}": list(values)
+            for (kind, field), values in OVERRIDE_ENUM_VALUES.items()
+        },
+        supply_kinds=[k.value for k in SUPPLY_KINDS],
+        unmodelled_kinds=[k.value for k in UNMODELLED_KINDS],
     )
 
 
-class ScenarioDetailOut(ScenarioOut):
-    overrides: list[OverrideOut]
+# --------------------------------------------------------------------------
+# Scenario CRUD
+# --------------------------------------------------------------------------
 
 
-# --- scenario CRUD (sans DELETE — spec E-4 / invariant 6) ---------------
+@router.get("", response_model=list[ScenarioSummaryOut])
+def list_scenarios(
+    customer_id: str | None = None,
+    include_delta: bool = True,
+    db: Session = Depends(get_db),
+):
+    """Every scenario, newest first, optionally narrowed to one customer.
+
+    SHARED: no filtering by user, ever. `include_delta=false` skips the per-row
+    preview for callers that only need the metadata.
+    """
+    query = db.query(Scenario)
+    if customer_id is not None:
+        query = query.filter(Scenario.customer_id == customer_id)
+    scenarios = query.order_by(Scenario.created_at.desc()).all()
+    return [_summary(db, s, with_delta=include_delta) for s in scenarios]
 
 
-@router.get("", response_model=list[ScenarioOut])
-def list_scenarios(db: Session = Depends(get_db)):
-    rows = db.query(Scenario).order_by(Scenario.created_at.desc()).all()
-    return [_scenario_out(r) for r in rows]
+@router.post("", response_model=ScenarioDetailOut, status_code=201)
+def create_scenario(body: ScenarioIn, db: Session = Depends(get_db)):
+    """Create a Draft scenario against one customer."""
+    customer = db.get(Customer, body.customer_id)
+    if customer is None:
+        raise HTTPException(status_code=404, detail="Customer not found")
 
-
-@router.post("", response_model=ScenarioOut, status_code=201)
-def create_scenario(payload: ScenarioCreateIn, db: Session = Depends(get_db)):
-    scenario = Scenario(name=payload.name, created_at=datetime.datetime.now(datetime.timezone.utc))
+    scenario = Scenario(
+        name=body.name,
+        description=body.description,
+        customer_id=customer.id,
+        status=ScenarioStatus.DRAFT,
+        created_by=body.created_by,
+    )
     db.add(scenario)
     db.commit()
     db.refresh(scenario)
-    return _scenario_out(scenario)
+    return _detail(db, scenario)
+
+
+def _detail(db: Session, scenario: Scenario) -> ScenarioDetailOut:
+    summary = _summary(db, scenario)
+    return ScenarioDetailOut(
+        **summary.model_dump(),
+        overrides=[
+            ScenarioOverrideOut.model_validate(o, from_attributes=True)
+            for o in scenario.overrides
+        ],
+    )
 
 
 @router.get("/{scenario_id}", response_model=ScenarioDetailOut)
 def get_scenario(scenario_id: str, db: Session = Depends(get_db)):
-    scenario = db.get(Scenario, scenario_id)
-    if scenario is None:
-        raise HTTPException(status_code=404, detail="Scenario not found")
-    overrides = db.query(ScenarioOverride).filter_by(scenario_id=scenario_id).order_by(ScenarioOverride.created_at).all()
-    return ScenarioDetailOut(
-        **_scenario_out(scenario).model_dump(),
-        overrides=[_override_out(db, o) for o in overrides],
-    )
+    """One scenario with every override on it."""
+    return _detail(db, _get_scenario(db, scenario_id))
 
 
-# --- overrides ------------------------------------------------------------
+@router.patch("/{scenario_id}", response_model=ScenarioDetailOut)
+def patch_scenario(
+    scenario_id: str, body: ScenarioPatch, db: Session = Depends(get_db)
+):
+    """Rename, re-describe, or move through the lifecycle.
+
+    Cannot set status to Applied -- applying is not a metadata edit, it writes
+    production data, and the only way to do it is POST /{id}/apply. Cannot touch
+    an already-applied scenario at all.
+    """
+    scenario = _get_scenario(db, scenario_id)
+    _require_mutable(scenario)
+
+    if body.status == ScenarioStatus.APPLIED:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "A scenario cannot be marked Applied directly. Applying writes "
+                "demand revisions into production data -- use "
+                f"POST /scenarios/{scenario_id}/apply, which does the work and "
+                "sets the status as a consequence."
+            ),
+        )
+
+    if body.name is not None:
+        scenario.name = body.name
+    if body.description is not None:
+        scenario.description = body.description
+    if body.status is not None:
+        if body.status not in EDITABLE_SCENARIO_STATUSES:
+            raise HTTPException(
+                status_code=400, detail=f"Cannot move a scenario to {body.status.value}."
+            )
+        scenario.status = body.status
+
+    scenario.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(scenario)
+    return _detail(db, scenario)
 
 
-class OverrideCreateIn(BaseModel):
-    kind: str
-    target_id: str
-    payload: dict = {}
+# --------------------------------------------------------------------------
+# Overrides
+# --------------------------------------------------------------------------
 
 
-@router.post("/{scenario_id}/overrides", response_model=OverrideOut, status_code=201)
-def add_override(scenario_id: str, payload: OverrideCreateIn, db: Session = Depends(get_db)):
-    scenario = db.get(Scenario, scenario_id)
-    if scenario is None:
-        raise HTTPException(status_code=404, detail="Scenario not found")
-    if scenario.status != ScenarioStatus.DRAFT:
-        raise HTTPException(status_code=409, detail="Scenario is not Draft")
+@router.post("/{scenario_id}/overrides", response_model=ScenarioOverrideOut, status_code=201)
+def add_override(
+    scenario_id: str, body: ScenarioOverrideIn, db: Session = Depends(get_db)
+):
+    """Add one override.
 
-    try:
-        kind = ScenarioOverrideKind(payload.kind)
-    except ValueError:
-        raise HTTPException(status_code=422, detail=f"invalid kind: {payload.kind!r}")
-
-    if not _target_exists(db, kind, payload.target_id):
-        raise HTTPException(status_code=422, detail="target not found for this kind")
-
-    _validate_payload(kind, payload.payload)
+    Validated BEFORE it is persisted, by the same
+    `app.engines.overrides.validate` the resolver re-runs at read time. A rejected
+    override never lands, so a scenario can never contain an override that the
+    preview would silently skip -- including a cross-Business-Unit inventory
+    override, which is refused with 400 and an explanation.
+    """
+    scenario = _get_scenario(db, scenario_id)
+    _require_mutable(scenario)
 
     override = ScenarioOverride(
-        scenario_id=scenario_id,
-        kind=kind,
-        target_id=payload.target_id,
-        payload=json.dumps(payload.payload),
-        created_at=datetime.datetime.now(datetime.timezone.utc),
+        scenario_id=scenario.id,
+        target_kind=body.target_kind,
+        field_name=body.field_name,
+        target_demand_line_id=body.target_demand_line_id,
+        target_well_id=body.target_well_id,
+        target_product_id=body.target_product_id,
+        target_business_unit_id=body.target_business_unit_id,
+        target_from_product_id=body.target_from_product_id,
+        target_to_product_id=body.target_to_product_id,
+        value_number=body.value_number,
+        value_date=body.value_date,
+        value_text=body.value_text,
+        note=body.note,
     )
+
+    try:
+        validate(override, scenario.customer)
+        assert_target_in_scope(db, scenario, override)
+    except (OverrideError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
     db.add(override)
+    scenario.updated_at = datetime.utcnow()
     db.commit()
     db.refresh(override)
-    return _override_out(db, override)
+    return ScenarioOverrideOut.model_validate(override, from_attributes=True)
 
 
 @router.delete("/{scenario_id}/overrides/{override_id}", status_code=204)
-def delete_override(scenario_id: str, override_id: str, db: Session = Depends(get_db)):
-    scenario = db.get(Scenario, scenario_id)
-    if scenario is None:
-        raise HTTPException(status_code=404, detail="Scenario not found")
+def delete_override(
+    scenario_id: str, override_id: str, db: Session = Depends(get_db)
+):
+    """Remove one override."""
+    scenario = _get_scenario(db, scenario_id)
+    _require_mutable(scenario)
+
     override = db.get(ScenarioOverride, override_id)
-    if override is None or override.scenario_id != scenario_id:
-        raise HTTPException(status_code=404, detail="Override not found")
-    if scenario.status != ScenarioStatus.DRAFT:
-        raise HTTPException(status_code=409, detail="Scenario is not Draft")
+    if override is None or override.scenario_id != scenario.id:
+        raise HTTPException(status_code=404, detail="Override not found on this scenario")
 
     db.delete(override)
+    scenario.updated_at = datetime.utcnow()
     db.commit()
     return None
 
 
-# --- preview (spec E-3) ----------------------------------------------------
+# --------------------------------------------------------------------------
+# Preview and apply
+# --------------------------------------------------------------------------
 
 
-@router.get("/{scenario_id}/preview")
-def preview(scenario_id: str, sections: str | None = None, db: Session = Depends(get_db)):
-    scenario = db.get(Scenario, scenario_id)
-    if scenario is None:
-        raise HTTPException(status_code=404, detail="Scenario not found")
+@router.get("/{scenario_id}/preview", response_model=ScenarioImpactOut)
+def get_preview(scenario_id: str, db: Session = Depends(get_db)):
+    """Coverage, MRP and Risk impact of this scenario. A READ-ONLY WHAT-IF.
 
-    section_set = {s.strip() for s in sections.split(",") if s.strip()} if sections else {"coverage", "mrp"}
-    overrides = db.query(ScenarioOverride).filter_by(scenario_id=scenario_id).all()
-    return preview_scenario(db, overrides, section_set)
-
-
-# --- apply (spec E-4) -------------------------------------------------------
-
-
-class ApplyOut(BaseModel):
-    applied_overrides: list[str]
-    rejected: list[dict]
-
-
-@router.post("/{scenario_id}/apply", response_model=ApplyOut)
-def apply(scenario_id: str, db: Session = Depends(get_db)):
-    scenario = db.get(Scenario, scenario_id)
-    if scenario is None:
-        raise HTTPException(status_code=404, detail="Scenario not found")
-    if scenario.status != ScenarioStatus.DRAFT:
-        raise HTTPException(status_code=409, detail="Scenario already applied")
-
-    overrides = db.query(ScenarioOverride).filter_by(scenario_id=scenario_id).all()
-
+    Deliberately no `db.commit()`: the engine writes nothing, so there is nothing
+    to commit. The official coverage verdict is untouched by this call and stays
+    exactly what the coverage engine last wrote.
+    """
+    scenario = _get_scenario(db, scenario_id)
     try:
-        applied = apply_scenario(db, scenario, overrides)
-    except SupplyOverrideRejected as exc:
-        db.rollback()
-        raise HTTPException(status_code=422, detail={"rejected": exc.rejected})
+        impact = preview(db, scenario)
+    except OverrideError as exc:
+        # A persisted override that no longer validates (e.g. written by an older
+        # build). Better a loud 409 than a preview computed with it silently
+        # dropped.
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "This scenario contains an override that is no longer valid, so no "
+                f"preview can be computed: {exc}"
+            ),
+        )
+    return ScenarioImpactOut.model_validate(impact, from_attributes=True)
 
+
+@router.post("/{scenario_id}/apply", response_model=ScenarioApplyOut)
+def apply_scenario(scenario_id: str, db: Session = Depends(get_db)):
+    """Write this scenario's overrides into production data. THIS ONE WRITES.
+
+    Demand changes go through the revision machinery, so a DemandRevision and an
+    ImpactRecord are created for every line that moves. Supply overrides are
+    refused (409) because they target Oracle-owned projections -- see
+    `app.engines.scenario_apply.apply_to_base_plan`. An already-applied scenario
+    is refused (409) too.
+
+    The refusals happen before anything is written, so a rejected apply leaves the
+    base plan exactly as it was.
+    """
+    scenario = _get_scenario(db, scenario_id)
+    try:
+        result = apply_to_base_plan(db, scenario)
+    except (ScenarioImmutable, ScenarioNotApplicable) as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc))
+    except OverrideError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc))
     db.commit()
-    return ApplyOut(applied_overrides=[o.id for o in applied], rejected=[])
+    return ScenarioApplyOut.model_validate(result, from_attributes=True)

@@ -1,8 +1,18 @@
-"""HMAC-signed bearer tokens (spec §認証コア). No server-side session: the
-token payload {uid, exp} is fully self-contained and verified by signature.
+"""HMAC-signed bearer tokens.
 
-`now` is injectable on both issue() and verify() so TTL-boundary tests don't
-depend on wall-clock timing.
+Format: base64url(json payload) + "." + base64url(hmac_sha256(payload, secret))
+Payload: {"uid": <user id>, "exp": <unix seconds>}
+
+Why not JWT: the only consumer of these tokens is this same process, so the
+interoperability JWT buys is unused, while its flexibility (alg negotiation)
+is exactly the part with the famous foot-guns. A fixed-algorithm signed blob
+is the same idea with no negotiable surface. When Entra ID arrives its ID
+token is validated by the PROVIDER (app.auth.provider) and then exchanged for
+one of these session tokens -- the token layer does not change.
+
+MVP-COMPROMISE[C-12]: AUTH_SECRET falls back to a hard-coded dev value, so a
+deployment that forgets to set it issues forgeable tokens. See
+MVP_COMPROMISES.md C-12.
 """
 
 import base64
@@ -12,58 +22,45 @@ import json
 import os
 import time
 
-TTL_SECONDS = 12 * 60 * 60  # 12h
-
-# COMPROMISE[C-12R]: AUTH_SECRET should be a required env var in production;
-# this dev fallback lets the app boot with a fixed, publicly-known secret
-# when it isn't set. Faithfully reproduces the original implementation's MVP
-# shortcut (see docs/superpowers/COMPROMISES.md).
-_DEV_SECRET = "octg-dev-insecure-auth-secret-do-not-use-in-prod"
+_DEV_SECRET = "octg-dev-secret-do-not-deploy"
+TOKEN_TTL_SECONDS = 12 * 3600
 
 
 def _secret() -> bytes:
-    return os.environ.get("AUTH_SECRET", _DEV_SECRET).encode("utf-8")
+    return os.environ.get("AUTH_SECRET", _DEV_SECRET).encode()
 
 
-def _b64encode(data: bytes) -> str:
-    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+def _b64(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
 
 
-def _b64decode(data: str) -> bytes:
-    padding = "=" * (-len(data) % 4)
-    return base64.urlsafe_b64decode(data + padding)
+def _unb64(text: str) -> bytes:
+    return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
 
 
-def issue(uid: str, now: float | None = None) -> str:
-    """Return a signed token for uid, expiring TTL_SECONDS after `now`."""
-    if now is None:
-        now = time.time()
-    payload = {"uid": uid, "exp": now + TTL_SECONDS}
-    payload_bytes = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
-    payload_b64 = _b64encode(payload_bytes)
-    signature = hmac.new(_secret(), payload_b64.encode("ascii"), hashlib.sha256).digest()
-    return f"{payload_b64}.{_b64encode(signature)}"
+def issue_token(user_id: str, now: float | None = None) -> str:
+    payload = json.dumps(
+        {"uid": user_id, "exp": int((now or time.time()) + TOKEN_TTL_SECONDS)},
+        separators=(",", ":"),
+    ).encode()
+    signature = hmac.new(_secret(), payload, hashlib.sha256).digest()
+    return f"{_b64(payload)}.{_b64(signature)}"
 
 
-def verify(token: str, now: float | None = None) -> str | None:
-    """Return uid if the token's signature is valid and it isn't expired,
-    else None. Never raises on malformed input."""
-    if now is None:
-        now = time.time()
+def verify_token(token: str, now: float | None = None) -> str | None:
+    """The user id, or None for anything invalid. One return path for every
+    failure mode on purpose -- distinguishing "expired" from "forged" in the
+    response would hand an attacker an oracle and buys the UI nothing (both
+    end at the login screen)."""
     try:
-        payload_b64, signature_b64 = token.split(".")
-        expected_signature = hmac.new(
-            _secret(), payload_b64.encode("ascii"), hashlib.sha256
-        ).digest()
-        actual_signature = _b64decode(signature_b64)
-        if not hmac.compare_digest(expected_signature, actual_signature):
+        payload_b64, signature_b64 = token.split(".", 1)
+        payload = _unb64(payload_b64)
+        expected = hmac.new(_secret(), payload, hashlib.sha256).digest()
+        if not hmac.compare_digest(_unb64(signature_b64), expected):
             return None
-        payload = json.loads(_b64decode(payload_b64))
-        exp = payload["exp"]
-        uid = payload["uid"]
-    except Exception:
+        claims = json.loads(payload)
+        if claims["exp"] < (now or time.time()):
+            return None
+        return str(claims["uid"])
+    except (ValueError, KeyError, TypeError):
         return None
-
-    if now > exp:
-        return None
-    return uid
