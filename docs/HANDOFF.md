@@ -21,7 +21,7 @@ check its structure; none of its real data is in the code).
 >
 > **When you bend a principle anew, put a marker in the code and add a row to the register. It is finished only when both are done.**
 
-**Where it stands: 19 screens work (Login / Home / Coverage / Approvals / Executive / Demand / Import / MRP / Order requirements / Surplus / By Item / Products / Customer-owned / Company inventory / Scenarios ×2 / Sharing / Well / Admin, plus 404). 628 tests pass. Authentication is implemented (§6) — the authorization holes that remain are C-12/C-13/C-14 plus `require_admin` not being applied (deferred on 8/12, see the backlog above).**
+**Where it stands: 19 screens work (Login / Home / Coverage / Approvals / Executive / Demand / Import / MRP / Order requirements / Surplus / By Item / Products / Customer-owned / Company inventory / Scenarios ×2 / Sharing / Well / Admin, plus 404). 720 tests pass. Authentication is implemented (§6). **Package 1 of 2026-09-06 closed the boundaries**: resource-resolving BU authorization (C-13 mostly closed, by-item carried as C-15), `/admin/*` writes admin-only (F02, scope by owner ruling = C-16), one quantity rule (F03), SQLite foreign keys enforced (F10). Remaining: C-12 (AUTH_SECRET default) / C-14 (token in URLs) / C-15.**
 
 **Work on 8/10: ① the UI overhaul (§0A/0B) ② the full company-inventory maintenance feature (backend CRUD plus screens, C-03) ③ the MT conversion layer (C-04/05/06) ④ an inventory utilisation block on the Executive Dashboard (demand netting, a 12/18/24/36-month variable window, an MT headline with a native breakdown).**
 
@@ -480,3 +480,17 @@ Five independent testers **forbidden from reading the source** (desktop UI / mob
 5. **HTML navigation to /wells**: `wells$` added to the SPA regex (removing the dead end where trimming the URL dropped you into JSON)
 
 638 tests green. Three sections of the manual updated.
+
+## 18. 2026-09-06: the adversarial review (F01–F16) — package 1, "close the boundaries"
+
+An external adversarial review arrived with ten reproduced scenarios. **Nothing new in it was taken on trust**: F03 (a negative demand stored and judged Covered) and F05 (another customer's stored verdict left stale after an assignment change) were reproduced live here; F04/F06/F10 were confirmed in code. Where it overlapped the known C-12/C-13/C-14 and unapplied `require_admin`, its priorities matched ours.
+
+**Owner rulings (one at a time, through AskUserQuestion)**: F04 = net shortfall is the figure, with a breakdown; F07 = an import approval is bound to what it approved (revision, proposed value, well state) and lapses when that changes; F08 = scenario apply requires the previewed version; F02 = only `/admin/*` writes are admin-only; F03 = demand > 0, stock ≥ 0, whole numbers for PC/JT; F01 batches = one foreign row refuses the batch. **From here on, any decision that is the owner's is put through AskUserQuestion** (recorded as a standing rule in the private repository's CLAUDE.md).
+
+**Package 1 (four commits, 638 → 720 tests)**:
+1. **F10** `app/db.py enforce_sqlite_foreign_keys` — `PRAGMA foreign_keys=ON` on every connection, in the app and every test engine. dev.db checked with `foreign_key_check` first (zero violations). Two tests that built orphans by hand were rewritten to assert the refusal.
+2. **F03** `app/quantities.py` — finite, ≤ 1e9, demand > 0, stock ≥ 0, PC/JT whole, in one place. A schema-level `Quantity` type (422) plus `validate_quantity` in every writer once the product is known (400). The three Excel parsers share `parse_quantity_cell`. Side fix: refusing inf/NaN at the schema turned into a 500 because FastAPI's 422 body echoes the input; a `RequestValidationError` handler now renders non-finite inputs as text.
+3. **F02** `require_admin_for_writes` on the admin router, split by verb; reads stay open. Tested with real tokens.
+4. **F01** `app/auth/scope.py` — first half: every id (path/query/body) walked to its BU, 403 with zero writes. Second half: lists confined through `planner_bu`, and `business_unit_id` threaded through the MRP/MOR/export engines. An import naming a foreign well is refused whole. **Remaining: by-item (C-15).**
+
+**Next**: package 2 (F04 net shortfall, F05 recompute every affected customer in the BU on an assignment change, F06 decided approvals immutable at the service layer, F09 actor recorded server-side) → package 3 (F07/F08).

@@ -79,6 +79,40 @@ def require_admin(user: User = Depends(get_current_user)) -> User:
     return user
 
 
+_WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+
+def require_admin_for_writes(
+    request: Request, user: User = Depends(get_current_user)
+) -> User:
+    """Reads stay open to every authenticated user; writes need the admin role.
+
+    Attached to the /admin router at include time (app.main). The router's GETs
+    -- lead-time components, coverage-scope defaults, the substitution tables,
+    safety stocks -- are master data every planner screen reads, so they are
+    not gated. Its writes change every Business Unit's verdicts at once, which
+    is not a planner's call.
+
+    Product-owner ruling, 2026-09-06 (review F02): this gate covers the
+    /admin/* writes and ONLY those. Business Unit creation/rename/delete, the
+    customer BU remap, and the manual company-inventory edits (C-03) remain
+    open to planners by the owner's explicit choice; see MVP_COMPROMISES.md.
+    `require_admin` (above) exists for a route that must be admin-only in
+    every method; this one exists so a whole router can split by verb.
+    """
+    if request.method in _WRITE_METHODS and user.role != UserRole.ADMIN:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"{request.method} {request.url.path} changes platform-wide "
+                "master data and requires the administrator role. Your account "
+                f"({user.email}) is a planner; ask an administrator to make "
+                "this change."
+            ),
+        )
+    return user
+
+
 def enforce_customer_scope(
     request: Request,
     user: User = Depends(get_current_user),

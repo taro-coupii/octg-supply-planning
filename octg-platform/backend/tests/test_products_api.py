@@ -8,6 +8,8 @@ endpoint ever starts filtering by demand, these fail.
 
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
+
+from app.db import enforce_sqlite_foreign_keys
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -17,9 +19,9 @@ from app.models import Product, UnitOfMeasure
 
 
 def _client():
-    engine = create_engine(
+    engine = enforce_sqlite_foreign_keys(create_engine(
         "sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool
-    )
+    ))
     TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     Base.metadata.create_all(bind=engine)
 

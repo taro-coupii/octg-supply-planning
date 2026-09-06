@@ -14,7 +14,7 @@ release of a hard assignment in Oracle.
 ```bash
 cd octg-platform/backend
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-DATABASE_URL="sqlite:///:memory:" .venv/bin/python -m pytest tests -q     # 666 tests
+DATABASE_URL="sqlite:///:memory:" .venv/bin/python -m pytest tests -q     # 720 tests
 DATABASE_URL="sqlite:///./dev.db" .venv/bin/python -m uvicorn app.main:app --port 8000
 
 cd ../frontend && npm install && npm run dev

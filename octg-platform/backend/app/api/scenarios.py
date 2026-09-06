@@ -45,12 +45,17 @@ from app.engines.scenario import (
     preview,
 )
 from app.engines.scenario_apply import ScenarioNotApplicable, apply_to_base_plan
+from app.quantities import InvalidQuantity, validate_quantity
+from app.auth.scope import planner_bu
 from app.models import (
     Customer,
+    DemandLine,
     EDITABLE_SCENARIO_STATUSES,
+    Product,
     Scenario,
     ScenarioOverride,
     ScenarioStatus,
+    ScenarioTargetKind,
 )
 from app.schemas import (
     OverrideFieldsOut,
@@ -166,6 +171,7 @@ def list_scenarios(
     customer_id: str | None = None,
     include_delta: bool = True,
     db: Session = Depends(get_db),
+    bu_scope: str | None = Depends(planner_bu),
 ):
     """Every scenario, newest first, optionally narrowed to one customer.
 
@@ -173,6 +179,10 @@ def list_scenarios(
     preview for callers that only need the metadata.
     """
     query = db.query(Scenario)
+    if bu_scope is not None:
+        query = query.join(Customer, Scenario.customer_id == Customer.id).filter(
+            Customer.business_unit_id == bu_scope
+        )
     if customer_id is not None:
         query = query.filter(Scenario.customer_id == customer_id)
     scenarios = query.order_by(Scenario.created_at.desc()).all()
@@ -262,6 +272,37 @@ def patch_scenario(
 # --------------------------------------------------------------------------
 
 
+def _check_override_quantity(db: Session, override) -> None:
+    """The unit-aware half of the quantity rule, once the product is known.
+
+    `overrides.validate` runs without a session and can only say "not negative".
+    Here the target resolves to a product, so 12.5 pieces on a PC-counted line
+    and a zero demand quantity are refused the same way every other writer
+    refuses them (app.quantities). Raised as 400 with the sentence.
+    """
+    if override.value_number is None:
+        return
+    product = None
+    if override.target_demand_line_id:
+        line = db.get(DemandLine, override.target_demand_line_id)
+        product = line.product if line is not None else None
+    elif override.target_product_id:
+        product = db.get(Product, override.target_product_id)
+    is_demand_qty = (
+        override.target_kind == ScenarioTargetKind.DEMAND_LINE
+        and override.field_name == "quantity"
+    )
+    try:
+        validate_quantity(
+            override.value_number,
+            kind="demand" if is_demand_qty else "stock",
+            unit=product.unit_of_measure if product is not None else None,
+            label=f"{override.target_kind.value}.{override.field_name}",
+        )
+    except InvalidQuantity as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.post("/{scenario_id}/overrides", response_model=ScenarioOverrideOut, status_code=201)
 def add_override(
     scenario_id: str, body: ScenarioOverrideIn, db: Session = Depends(get_db)
@@ -295,6 +336,7 @@ def add_override(
 
     try:
         validate(override, scenario.customer)
+        _check_override_quantity(db, override)
         assert_target_in_scope(db, scenario, override)
     except (OverrideError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))

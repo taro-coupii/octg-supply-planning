@@ -24,6 +24,7 @@ from app.engines.coverage_view import (
 )
 from app.engines.inventory import InventoryNotScoped
 from app.engines.well_dates import sort_by_earliest_ros
+from app.auth.scope import planner_bu
 from app.models import (
     CoverageStatus,
     Customer,
@@ -53,6 +54,7 @@ def coverage_grid(
     coverage_status: list[str] | None = Query(default=None),
     status: list[DemandStatus] | None = Query(default=None),
     profile: list[DemandProfile] | None = Query(default=None),
+    bu_scope: str | None = Depends(planner_bu),
 ):
     """One row per well: counts of in-scope and covered lines, plus the rollup.
 
@@ -74,13 +76,18 @@ def coverage_grid(
     """
     projection = project_coverage(db, status_filter=status, profile_filter=profile)
 
-    query = db.query(Well).options(
-        joinedload(Well.planning_node).joinedload(PlanningNode.customer)
+    query = (
+        db.query(Well)
+        .options(joinedload(Well.planning_node).joinedload(PlanningNode.customer))
+        .join(PlanningNode, Well.planning_node_id == PlanningNode.id)
     )
+    if bu_scope is not None:
+        # A planner's grid is their Business Unit's grid (review 2026-09-06, F01).
+        query = query.join(Customer, PlanningNode.customer_id == Customer.id).filter(
+            Customer.business_unit_id == bu_scope
+        )
     if customer_id is not None:
-        query = query.join(
-            PlanningNode, Well.planning_node_id == PlanningNode.id
-        ).filter(PlanningNode.customer_id == customer_id)
+        query = query.filter(PlanningNode.customer_id == customer_id)
     # Fetched by name for a deterministic base order; the ROWS are then sorted by
     # earliest ROS (see below), with the name as the tie-break, so this ordering
     # only decides ties.

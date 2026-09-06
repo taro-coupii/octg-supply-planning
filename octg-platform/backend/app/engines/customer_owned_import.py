@@ -129,6 +129,7 @@ from app.engines.demand_import import (
     _normalise_header,
     _text,
 )
+from app.quantities import parse_quantity_cell
 from app.models import (
     Customer,
     CustomerOwnedInventory,
@@ -199,35 +200,11 @@ def _map_headers(header_cells: tuple) -> dict[str, int]:
     return found
 
 
-def _parse_owned_quantity(cell: object) -> tuple[float | None, str | None]:
-    """Quantity of owned material. ZERO IS VALID; negative is not.
-
-    Not `demand_import._parse_quantity`, and the difference is a real one rather
-    than a fork: that function refuses 0 because a demand line for nothing is not
-    demand. Here 0 is the FACT "we counted and own none", which the model needs to
-    be statable -- see the module docstring. Everything else about the parsing is
-    identical (int-like floats, thousands separators, non-finite refused).
-    """
-    if cell is None or (isinstance(cell, str) and not cell.strip()):
-        return None, "quantity is empty"
-    if isinstance(cell, bool):
-        return None, f"quantity {cell!r} is not a number"
-    if isinstance(cell, (int, float)):
-        value = float(cell)
-    else:
-        cleaned = str(cell).strip().replace(",", "").replace(" ", "")
-        try:
-            value = float(cleaned)
-        except ValueError:
-            return None, f"quantity {str(cell).strip()!r} is not a number"
-    if value != value or value in (float("inf"), float("-inf")):
-        return None, "quantity is not a finite number"
-    if value < 0:
-        return None, (
-            f"quantity cannot be negative, got {value:g}. A customer cannot own "
-            "less than nothing; use 0 to state that none is owned."
-        )
-    return value, None
+def _parse_owned_quantity(cell: object, *, unit=None) -> tuple[float | None, str | None]:
+    """Not `demand_import._parse_quantity`: that refuses 0 because a demand line
+    for nothing is not demand. Here 0 is the FACT "we counted and own none". The
+    coercion and the rest of the rule are shared in app.quantities."""
+    return parse_quantity_cell(cell, kind="stock", unit=unit, label="quantity")
 
 
 def _parse_as_of(cell: object) -> tuple[datetime | None, str | None]:
@@ -435,7 +412,10 @@ def parse_and_replace(
             if product is None:
                 problems.append(f"unknown product {raw_product!r}")
 
-        quantity, err = _parse_owned_quantity(cell_at("quantity"))
+        quantity, err = _parse_owned_quantity(
+            cell_at("quantity"),
+            unit=product.unit_of_measure if product is not None else None,
+        )
         if err:
             problems.append(err)
 

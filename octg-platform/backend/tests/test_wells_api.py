@@ -2,6 +2,8 @@ from datetime import datetime, timedelta
 
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
+
+from app.db import enforce_sqlite_foreign_keys
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -28,9 +30,9 @@ from app.models import (
 
 
 def _build_client_and_well():
-    engine = create_engine(
+    engine = enforce_sqlite_foreign_keys(create_engine(
         "sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool
-    )
+    ))
     TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     Base.metadata.create_all(bind=engine)
 
@@ -136,9 +138,9 @@ def _build_client_with_pending_then_revised_line():
     """A CONFIRMED/PRIMARY line that resolves PendingApproval, then gets revised
     to Planned -- the exact scenario that used to leave a stale PendingApproval
     row visible on GET /wells/{id} and on the Home Dashboard forever."""
-    engine = create_engine(
+    engine = enforce_sqlite_foreign_keys(create_engine(
         "sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool
-    )
+    ))
     TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     Base.metadata.create_all(bind=engine)
 

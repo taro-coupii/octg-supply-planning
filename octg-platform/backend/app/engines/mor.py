@@ -293,6 +293,7 @@ def _row_for(
 def order_requirements(
     db: Session,
     customer_id: str | None = None,
+    business_unit_id: str | None = None,
     horizon_months: int = DEFAULT_HORIZON_MONTHS,
     today: date | None = None,
 ) -> MorGrid:
@@ -312,7 +313,6 @@ def order_requirements(
     # system-wide procurement stance it shares with MRP (see
     # `mrp.InventoryPosition` for why the all-BU sum is right there and
     # nowhere else) -- and says so in the notes.
-    business_unit_id: str | None = None
     if customer_id is not None:
         customer = db.get(Customer, customer_id)
         business_unit_id = (
@@ -320,7 +320,7 @@ def order_requirements(
         )
 
     lines_by_product: dict[str, list[DemandLine]] = {}
-    for line in _included_lines(db, customer_id):
+    for line in _included_lines(db, customer_id, business_unit_id):
         lines_by_product.setdefault(line.product_id, []).append(line)
 
     rows: list[MorRow] = []

@@ -11,7 +11,8 @@ from app.engines.coverage_scope import (
 )
 from app.engines.coverage_view import planning_node_path
 from app.engines.well_dates import WellDates, sort_by_earliest_ros, well_dates
-from app.models import CoverageStatus, DemandLine, DemandStatus, PlanningNode, Well
+from app.auth.scope import planner_bu
+from app.models import CoverageStatus, DemandLine, DemandStatus, PlanningNode, Well, Customer
 from app.schemas import (
     DemandLineOut,
     WellDemandStatusIn,
@@ -126,6 +127,7 @@ def list_wells(
     db: Session = Depends(get_db),
     coverage_status: str | None = None,
     demand_status: list[DemandStatus] | None = Query(default=None),
+    bu_scope: str | None = Depends(planner_bu),
 ):
     """Every well, SORTED BY EARLIEST ROS ASCENDING.
 
@@ -144,6 +146,13 @@ def list_wells(
     query = db.query(Well).options(
         joinedload(Well.planning_node).joinedload(PlanningNode.customer)
     )
+    if bu_scope is not None:
+        # A planner's list is their Business Unit's list (review 2026-09-06, F01).
+        query = (
+            query.join(PlanningNode, Well.planning_node_id == PlanningNode.id)
+            .join(Customer, PlanningNode.customer_id == Customer.id)
+            .filter(Customer.business_unit_id == bu_scope)
+        )
     if coverage_status is not None:
         query = query.filter(Well.coverage_status == coverage_status)
     if demand_status:

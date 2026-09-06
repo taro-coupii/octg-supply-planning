@@ -4,12 +4,14 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session, joinedload
 
 from app.db import get_db
+from app.quantities import InvalidQuantity, validate_quantity
 from app.engines.coverage import apply_revision
 from app.engines.coverage_scope import (
     effective_profile_filter,
     effective_status_filter,
 )
 from app.engines.coverage_view import planning_node_path
+from app.auth.scope import planner_bu
 from app.models import (
     CoverageResult,
     CoverageStatus,
@@ -19,6 +21,7 @@ from app.models import (
     PlanningNode,
     Product,
     Well,
+    Customer,
 )
 from app.schemas import (
     DemandLineListOut,
@@ -46,6 +49,7 @@ def list_demand_lines(
     ros_from: datetime | None = None,
     ros_to: datetime | None = None,
     limit: int = Query(default=100, ge=1, le=1000),
+    bu_scope: str | None = Depends(planner_bu),
     offset: int = Query(default=0, ge=0),
 ):
     """Flat, filterable, paginated demand across every well.
@@ -101,8 +105,11 @@ def list_demand_lines(
             db.query(DemandLine)
             .join(Well, DemandLine.well_id == Well.id)
             .join(PlanningNode, Well.planning_node_id == PlanningNode.id)
+            .join(Customer, PlanningNode.customer_id == Customer.id)
             .join(Product, DemandLine.product_id == Product.id)
         )
+        if bu_scope is not None:
+            query = query.filter(Customer.business_unit_id == bu_scope)
         if customer_id is not None:
             query = query.filter(PlanningNode.customer_id == customer_id)
         if well_id is not None:
@@ -231,7 +238,15 @@ def create_revision(demand_line_id: str, body: DemandRevisionIn, db: Session = D
                 "quantity, ROS date and profile."
             ),
         )
-    impact = apply_revision(db, line, body.quantity, body.ros_date, body.profile)
+    try:
+        quantity = validate_quantity(
+            body.quantity, kind="demand", unit=line.product.unit_of_measure
+        )
+    except InvalidQuantity as exc:
+        # -100 Mtr used to be stored and then judged Covered (review 2026-09-06,
+        # F03). A demand line is arithmetic input; refuse what cannot be added.
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    impact = apply_revision(db, line, quantity, body.ros_date, body.profile)
     db.commit()
     db.refresh(impact)
     return impact

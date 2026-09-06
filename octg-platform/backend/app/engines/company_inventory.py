@@ -126,6 +126,7 @@ from sqlalchemy.orm import Session
 from app.engines.coverage import recompute_customer
 from app.engines.demand_import import DemandImportError, _normalise_header, _text
 from app.engines.inventory import InventoryRowMissing, InventoryScopeMissing
+from app.quantities import InvalidQuantity, parse_quantity_cell, validate_quantity
 from app.models import (
     BusinessUnit,
     CompanyInventoryUpload,
@@ -611,6 +612,20 @@ class WriteResult:
     recompute: RecomputeReport
 
 
+
+def _check_stock_quantity(db: Session, product_id: str, quantity: float, label: str) -> float:
+    """One rule for every stock figure a writer accepts (app.quantities).
+
+    Replaces six copies of `if quantity < 0: raise ValueError(...)`, none of
+    which refused infinity -- JSON 1e309 was stored as +inf on an on-hand row
+    (review 2026-09-06, F03). `InvalidQuantity` is a ValueError, so the API
+    layer's existing mapping to 400 still applies.
+    """
+    product = db.get(Product, product_id)
+    unit = product.unit_of_measure if product is not None else None
+    return validate_quantity(quantity, kind="stock", unit=unit, label=label)
+
+
 def set_on_hand(
     db: Session, row_id: str, quantity: float
 ) -> WriteResult:
@@ -621,8 +636,7 @@ def set_on_hand(
     if row is None:
         raise LookupError(f"No InventoryOnHand row {row_id}")
     _require_maintainable("InventoryOnHand", row_id, row.source_system)
-    if quantity < 0:
-        raise ValueError("On-hand quantity cannot be negative")
+    quantity = _check_stock_quantity(db, row.product_id, quantity, "on-hand quantity")
 
     before = {
         "quantity": row.quantity,
@@ -648,8 +662,7 @@ def create_on_hand(
     """Create an `InventoryOnHand` row where none exists. A row already existing
     for (business_unit_id, product_id) is a caller error -- use `set_on_hand`.
     """
-    if quantity < 0:
-        raise ValueError("On-hand quantity cannot be negative")
+    quantity = _check_stock_quantity(db, product_id, quantity, "on-hand quantity")
     existing = (
         db.query(InventoryOnHand)
         .filter(
@@ -708,8 +721,7 @@ def set_on_order(
     if row is None:
         raise LookupError(f"No InventoryOnOrder row {row_id}")
     _require_maintainable("InventoryOnOrder", row_id, row.source_system)
-    if quantity < 0:
-        raise ValueError("On-order quantity cannot be negative")
+    quantity = _check_stock_quantity(db, row.product_id, quantity, "on-order quantity")
 
     before = {
         "quantity": row.quantity,
@@ -744,8 +756,7 @@ def create_on_order(
     quantity: float,
     expected_arrival_date: datetime | None = None,
 ) -> WriteResult:
-    if quantity < 0:
-        raise ValueError("On-order quantity cannot be negative")
+    quantity = _check_stock_quantity(db, product_id, quantity, "on-order quantity")
     row = InventoryOnOrder(
         business_unit_id=business_unit_id,
         product_id=product_id,
@@ -798,8 +809,7 @@ def set_assignment(db: Session, row_id: str, quantity: float) -> WriteResult:
     if row is None:
         raise LookupError(f"No InventoryAssignment row {row_id}")
     _require_maintainable("InventoryAssignment", row_id, row.source_system)
-    if quantity < 0:
-        raise ValueError("Assigned quantity cannot be negative")
+    quantity = _check_stock_quantity(db, row.product_id, quantity, "assigned quantity")
 
     before = {
         "quantity": row.quantity,
@@ -823,8 +833,7 @@ def set_assignment(db: Session, row_id: str, quantity: float) -> WriteResult:
 def create_assignment(
     db: Session, demand_line_id: str, product_id: str, quantity: float
 ) -> WriteResult:
-    if quantity < 0:
-        raise ValueError("Assigned quantity cannot be negative")
+    quantity = _check_stock_quantity(db, product_id, quantity, "assigned quantity")
     customer = _assignment_customer(db, demand_line_id)
     row = InventoryAssignment(
         demand_line_id=demand_line_id,
@@ -906,30 +915,10 @@ def _map_headers(header_cells: tuple) -> dict[str, int]:
     return found
 
 
-def _parse_on_hand_quantity(cell: object) -> tuple[float | None, str | None]:
-    """Same rule as `customer_owned_import._parse_owned_quantity`: 0 is a valid,
-    meaningful "this BU holds none of it"; negative is refused.
-    """
-    if cell is None or (isinstance(cell, str) and not cell.strip()):
-        return None, "on_hand_quantity is empty"
-    if isinstance(cell, bool):
-        return None, f"on_hand_quantity {cell!r} is not a number"
-    if isinstance(cell, (int, float)):
-        value = float(cell)
-    else:
-        cleaned = str(cell).strip().replace(",", "").replace(" ", "")
-        try:
-            value = float(cleaned)
-        except ValueError:
-            return None, f"on_hand_quantity {str(cell).strip()!r} is not a number"
-    if value != value or value in (float("inf"), float("-inf")):
-        return None, "on_hand_quantity is not a finite number"
-    if value < 0:
-        return None, (
-            f"on_hand_quantity cannot be negative, got {value:g}. A Business Unit "
-            "cannot hold less than nothing; use 0 to state that none is held."
-        )
-    return value, None
+def _parse_on_hand_quantity(cell: object, *, unit=None) -> tuple[float | None, str | None]:
+    """0 is a valid, meaningful "this BU holds none of it"; negative, non-finite
+    and (for PC/JT) fractional are refused -- app.quantities holds the rule."""
+    return parse_quantity_cell(cell, kind="stock", unit=unit, label="on_hand_quantity")
 
 
 def _read_rows(file_bytes: bytes) -> tuple[str, list[tuple], dict[str, int]]:
@@ -1057,7 +1046,10 @@ def parse_and_replace_on_hand(
             if product is None:
                 problems.append(f"unknown product {raw_product!r}")
 
-        quantity, err = _parse_on_hand_quantity(cell_at("on_hand_quantity"))
+        quantity, err = _parse_on_hand_quantity(
+            cell_at("on_hand_quantity"),
+            unit=product.unit_of_measure if product is not None else None,
+        )
         if err:
             problems.append(err)
 

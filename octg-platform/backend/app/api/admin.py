@@ -88,6 +88,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.db import get_db
+from app.quantities import InvalidQuantity, validate_quantity
 from app.engines.coverage_scope import (
     DEFAULT_PROFILE_FILTER,
     DEFAULT_STATUS_FILTER,
@@ -1696,10 +1697,12 @@ def upsert_safety_stock(
     product = db.get(Product, product_id)
     if product is None:
         raise HTTPException(status_code=404, detail="Product not found")
-    if body.quantity < 0:
-        raise HTTPException(
-            status_code=400, detail="Safety stock cannot be negative"
+    try:
+        quantity = validate_quantity(
+            body.quantity, kind="stock", unit=product.unit_of_measure, label="safety stock"
         )
+    except InvalidQuantity as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     row = (
         db.query(SafetyStock)
         .filter(SafetyStock.product_id == product_id)
@@ -1708,7 +1711,7 @@ def upsert_safety_stock(
     if row is None:
         row = SafetyStock(product_id=product_id)
         db.add(row)
-    row.quantity = body.quantity
+    row.quantity = quantity
     row.note = body.note
     db.commit()
     return SafetyStockRowOut(

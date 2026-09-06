@@ -1,7 +1,7 @@
 # OCTG Supply Readiness Platform — Requirements (consolidated, as of 2026-08)
 
 A single-page restatement of the original requirements plus the product-owner rulings made
-during development, grounded in the current implementation (19 screens, 666 tests, deployed
+during development, grounded in the current implementation (19 screens, 720 tests, deployed
 on Render). Implementation handover detail lives in `../HANDOFF.md`; deliberate compromises
 in `../MVP_COMPROMISES.md`.
 
@@ -20,9 +20,12 @@ in `../MVP_COMPROMISES.md`.
 
 | Role | Access |
 |---|---|
-| admin | All business units. Operates Administration (master data, default scopes) |
-| planner | Pinned to one BU. Requesting another BU's customer returns 403 |
+| admin | All business units. The only role that may write `/admin/*` master data (lead times, coverage-scope defaults, substitution tables, safety stock) |
+| planner | Pinned to one BU. **Every resource the request names — by path, query or JSON body — is walked back to its BU and refused with 403 (zero writes) if foreign; every list, dashboard, MRP view and export is confined to the planner's BU.** A batch (import workbook, scenario overrides) that names anything outside the BU is refused whole. Reads of `/admin/*` master data stay open |
 
+- Authorization (2026-09-06 ruling): what stays **open to planners inside their own BU** is a
+  deliberate choice — BU create/rename/delete, customer BU remap and policy, and the manual
+  company-inventory edits (C-03). Recorded as C-16 in the compromise register
 - Authentication: dev email + password (PBKDF2) with a **provider structure designed to be
   swapped for Entra ID** (`AUTH_PROVIDER` env). Tokens are HMAC-signed and self-expiring
   (12h). There is deliberately no logout endpoint (no server-side session state).
@@ -48,6 +51,13 @@ in `../MVP_COMPROMISES.md`.
    same production engines. No second implementation
 8. **Unit of measure is mandatory on every screen** (Mtr / PC / MT) — mixed-unit
    aggregations return `quantities_by_unit`, never a scalar sum
+9. **One quantity rule for every writer** (`app/quantities.py`, ruled 2026-09-06): finite,
+   at most 1e9, demand strictly positive, stock (on hand / on order / assignments / safety
+   stock) zero or more, whole numbers only for PC and JT. Request bodies are checked at
+   the schema (422); each writer applies the unit-aware half once the product is known
+   (400). Excel imports share the same rule
+10. **Foreign keys are enforced on every connection**, SQLite included — an orphan row
+    cannot be committed
 
 Cross-cutting rules settled by rulings during development:
 
@@ -167,7 +177,7 @@ Cross-cutting rules settled by rulings during development:
 - **Deployment**: Render (`render.yaml`, free plan — spins down after ~15 min idle).
   Push auto-redeploys. The DB is the in-image `dev.db` (every redeploy resets to the demo
   state). `VITE_API_BASE=""` yields relative URLs in production
-- **Testing**: pytest (currently 638 tests) pinning identities and boundaries.
+- **Testing**: pytest (currently 720 tests) pinning identities and boundaries.
   Agent-written tests are cross-checked from the outside against real data
 
 ## 6. Out of scope / deferred (pre-pilot backlog)
@@ -191,10 +201,17 @@ notifications ordering deliberately left open until valuation lands.
    - Scope: **Surplus List first.** Executive Dashboard money figures are a separate,
      later task, not bundled with this one
    - Admin surface: extends **Product Workspace** (not a new Administration tab)
-2. Security — apply `require_admin` to the /admin routes; C-12 (remove the AUTH_SECRET dev
-   fallback); C-13 (object-level authorization and automatic BU filtering on list APIs);
-   C-14 (`?access_token=` download links); login rate limiting. Must be closed before pilot
+2. Security — ~~apply `require_admin` to the /admin routes~~ (done 2026-09-06, writes only
+   by ruling); ~~C-13 object-level authorization and list filtering~~ (done 2026-09-06 except
+   `/mrp/by-item`, tracked as C-15); C-12 (remove the AUTH_SECRET dev fallback); C-14
+   (`?access_token=` download links); login rate limiting. Must be closed before pilot
    exposure regardless of pilot date — ordering vs. item 3 below intentionally undecided
+2b. From the 2026-09-06 adversarial review, ruled and queued: F04 net shortfall with a
+   breakdown (demand / customer-owned / company / substitute / residual) as the MRP figure;
+   F05 recompute every affected customer in the BU on an assignment change; F06 decided
+   approvals immutable at the service layer (scenario apply included); F07 import
+   approvals bound to the revision they approved; F08 scenario apply requires the
+   previewed version; F09 actor recorded server-side
 3. Notifications — Teams/mail push (new uncovered wells, pending approvals, approaching
    order deadlines)
 

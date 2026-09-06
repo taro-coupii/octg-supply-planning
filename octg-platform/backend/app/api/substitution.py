@@ -9,6 +9,7 @@ from app.engines.substitution import (
     find_candidates,
     request_approval,
 )
+from app.auth.scope import planner_bu
 from app.models import (
     DemandLine,
     PlanningNode,
@@ -16,6 +17,7 @@ from app.models import (
     SubstitutionApprovalStatus,
     Well,
     WellSubstitutionApproval,
+    Customer,
 )
 from app.schemas import (
     ApprovalQueueRowOut,
@@ -35,6 +37,7 @@ def list_substitution_approvals(
     status: SubstitutionApprovalStatus | None = None,
     limit: int = Query(default=200, ge=1, le=1000),
     db: Session = Depends(get_db),
+    bu_scope: str | None = Depends(planner_bu),
 ):
     """The approval QUEUE: every well-substitution approval, newest request
     first, optionally filtered by status.
@@ -44,6 +47,14 @@ def list_substitution_approvals(
     had no screen listing them. Decisions still go through the one existing
     endpoint (`POST /substitution-approvals/{id}/decision`)."""
     query = db.query(WellSubstitutionApproval)
+    if bu_scope is not None:
+        query = (
+            query.join(DemandLine, WellSubstitutionApproval.demand_line_id == DemandLine.id)
+            .join(Well, Well.id == DemandLine.well_id)
+            .join(PlanningNode, Well.planning_node_id == PlanningNode.id)
+            .join(Customer, PlanningNode.customer_id == Customer.id)
+            .filter(Customer.business_unit_id == bu_scope)
+        )
     if status is not None:
         query = query.filter(WellSubstitutionApproval.status == status)
     approvals = (

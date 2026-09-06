@@ -83,9 +83,18 @@ def test_queue_status_filter(client_world):
     assert [r["approval_id"] for r in approved] == [newer_id]
 
 
-def test_queue_survives_a_deleted_demand_line(client_world):
-    """An approval outlives its line (no FK cascade). The queue reports the
-    orphan with nulls rather than 500ing or hiding it."""
+def test_a_demand_line_with_an_open_approval_cannot_be_deleted(client_world):
+    """An approval can no longer outlive its line, because the line cannot go.
+
+    This test used to build an orphan by hand -- delete the line, keep the
+    approval -- and assert the queue rendered it with nulls instead of 500ing.
+    Since foreign keys are enforced on every connection (F10, 2026-09-06), that
+    state cannot be constructed at all: the database refuses the delete while
+    the approval still points at the line. The queue's null-tolerant rendering
+    stays in place as belt-and-braces, but the guarantee is now upstream.
+    """
+    from sqlalchemy.exc import IntegrityError
+
     client, session_factory, _w = client_world
     older_id, _newer_id = _seed_approvals(session_factory)
 
@@ -93,30 +102,26 @@ def test_queue_survives_a_deleted_demand_line(client_world):
     try:
         approval = db.get(WellSubstitutionApproval, older_id)
         line = db.get(DemandLine, approval.demand_line_id)
-        # Remove dependents first (coverage rows FK the line).
-        from app.models import CoverageResult
+        from app.models import CoverageResult, DemandRevision, ImpactRecord
 
         cr = db.get(CoverageResult, line.id)
         if cr is not None:
             db.delete(cr)
-        from app.models import DemandRevision, ImpactRecord
-
         for rev in db.query(DemandRevision).filter_by(demand_line_id=line.id):
             db.delete(rev)
         for imp in db.query(ImpactRecord).filter_by(demand_line_id=line.id):
             db.delete(imp)
         db.delete(line)
-        db.commit()
+        with pytest.raises(IntegrityError):
+            db.commit()
+        db.rollback()
     finally:
         db.close()
 
     resp = client.get("/substitution-approvals")
     assert resp.status_code == 200, resp.text
-    orphan = next(r for r in resp.json() if r["approval_id"] == older_id)
-    assert orphan["well_id"] is None
-    assert orphan["quantity"] is None and orphan["unit_of_measure"] is None
-    # The product descriptions still resolve (products were not deleted).
-    assert orphan["from_product_description"]
+    row = next(r for r in resp.json() if r["approval_id"] == older_id)
+    assert row["well_id"] is not None, "the line survived, so the queue is whole"
 
 
 def test_deciding_a_decided_approval_is_409(client_world):

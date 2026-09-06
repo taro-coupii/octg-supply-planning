@@ -42,6 +42,7 @@ from app.engines.demand_import_preview import (
     ConflictPreviewUnavailable,
     preview_row_conflict,
 )
+from app.auth.scope import bus_of_import_batch, planner_bu
 from app.models import (
     Customer,
     DemandImportBatch,
@@ -211,7 +212,9 @@ def _load(db: Session, batch_id: str) -> DemandImportBatch:
 
 @router.post("", response_model=DemandImportBatchOut, status_code=201)
 async def create_demand_import(
-    file: UploadFile = File(...), db: Session = Depends(get_db)
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    bu_scope: str | None = Depends(planner_bu),
 ):
     """Upload an .xlsx demand sheet. Stages and matches; changes NO demand.
 
@@ -247,17 +250,43 @@ async def create_demand_import(
     except DemandImportError as exc:
         db.rollback()
         raise HTTPException(status_code=400, detail=str(exc))
+    if bu_scope is not None:
+        # Owner ruling 2026-09-06 (F01 batches): one row outside the planner's
+        # Business Unit refuses the WHOLE upload, and nothing is staged. A
+        # partially staged batch would look finished while silently missing
+        # rows, which is the state the ruling exists to prevent.
+        db.flush()
+        foreign = bus_of_import_batch(db, batch.id) - {bu_scope}
+        if foreign:
+            db.rollback()
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "This workbook names wells in another Business Unit, so none "
+                    "of it was staged. Your account is confined to one Business "
+                    "Unit; remove the foreign rows and upload again."
+                ),
+            )
     db.commit()
     return _batch_out(db, _load(db, batch.id))
 
 
 @router.get("", response_model=list[DemandImportBatchSummaryOut])
-def list_demand_imports(db: Session = Depends(get_db)):
+def list_demand_imports(
+    db: Session = Depends(get_db), bu_scope: str | None = Depends(planner_bu)
+):
     batches = (
         db.query(DemandImportBatch)
         .order_by(DemandImportBatch.created_at.desc())
         .all()
     )
+    if bu_scope is not None:
+        # A batch belongs to the Business Units its rows' wells belong to. A
+        # planner sees batches that touch only their own BU (or none yet).
+        batches = [
+            b for b in batches
+            if not (bus_of_import_batch(db, b.id) - {bu_scope})
+        ]
     return [
         DemandImportBatchSummaryOut(
             id=b.id,
