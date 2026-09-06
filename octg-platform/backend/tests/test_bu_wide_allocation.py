@@ -20,6 +20,7 @@ from app.models import (
     AllocationPolicy,
     CoverageStatus,
     CustomerOwnedInventory,
+    InventoryAssignment,
     InventoryOnHand,
 )
 from tests.test_scenario_engine import _bu, _customer, _line, _product, _stock, _well
@@ -329,3 +330,64 @@ def test_over_assignment_cannot_manufacture_coverage(db_session):
         line_a.coverage_result.drawn_company + line_b.coverage_result.drawn_company
     )
     assert drawn <= 5000
+
+
+def test_a_soft_customers_own_reservation_is_named_in_its_reason_not_called_unassigned(
+    db_session,
+):
+    """Owner ruling 2026-09-06: reserved steel is called reserved on the well
+    screen exactly as on the Executive Dashboard. Alpha (SOFT) holds a 3,000
+    reservation on its 5,000 line and Bravo (SOFT) a 2,000 one, so 1,000 of the
+    6,000 is genuinely unassigned. Alpha's line draws its own 3,000 and the shared
+    1,000 and is short 1,000 -- and its reason says which was which."""
+    bu = _bu(db_session)
+    product = _product(db_session)
+    _stock(db_session, bu, product, 6000)
+    a, node_a = _customer(db_session, name="Alpha", bu=bu, policy=AllocationPolicy.SOFT)
+    b, node_b = _customer(db_session, name="Bravo", bu=bu, policy=AllocationPolicy.SOFT)
+    line_a = _line(db_session, _well(db_session, node_a, "W-Alpha"), product, 5000, days_out=100)
+    line_b = _line(db_session, _well(db_session, node_b, "W-Bravo"), product, 1000, days_out=200)
+    for line, qty in ((line_a, 3000), (line_b, 2000)):
+        db_session.add(
+            InventoryAssignment(
+                demand_line_id=line.id, product_id=product.id, quantity=qty,
+                source_system="synthetic",
+            )
+        )
+    db_session.flush()
+
+    recompute_business_unit(db_session, bu)
+
+    result = line_a.coverage_result
+    assert result.status != CoverageStatus.COVERED
+    assert (
+        "3000 of 5000 drawn from this customer's own pooled Oracle reservation and "
+        "1000 from the unassigned remainder in ROS order, still short by 1000"
+    ) in result.reason
+    assert "4000 of 5000" not in result.reason
+
+
+def test_the_split_applies_when_only_this_customer_holds_a_reservation(db_session):
+    """No neighbour reservation, so the plain SOFT sentence: the reserved part is
+    still named, and the shared part is called the shared pool."""
+    bu = _bu(db_session)
+    product = _product(db_session)
+    _stock(db_session, bu, product, 4000)
+    a, node_a = _customer(db_session, name="Alpha", bu=bu, policy=AllocationPolicy.SOFT)
+    line_a = _line(db_session, _well(db_session, node_a, "W-Alpha"), product, 5000, days_out=100)
+    db_session.add(
+        InventoryAssignment(
+            demand_line_id=line_a.id, product_id=product.id, quantity=3000,
+            source_system="synthetic",
+        )
+    )
+    db_session.flush()
+
+    recompute_business_unit(db_session, bu)
+
+    reason = line_a.coverage_result.reason
+    assert reason.startswith("Insufficient on-hand inventory for requested ROS")
+    assert (
+        "3000 of 5000 drawn from this customer's own pooled Oracle reservation and "
+        "1000 from the shared pool in ROS order, still short by 1000"
+    ) in reason

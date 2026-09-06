@@ -1836,7 +1836,8 @@ def _require_migrated_schema() -> None:
 # Child-before-parent order, used by --reset. Kept explicit rather than derived
 # so that a new table is a visible, deliberate edit here.
 #
-# `users` is deliberately ABSENT: logins are provisioned by seed/seed_users.py
+# `users` IS listed (last but one): logins are provisioned by seed/seed_users.py,
+# which the documented sequence runs after the world seed -- see the entry.
 # and must survive a demo-data reset -- wiping them would lock everyone out of
 # the freshly reseeded instance.
 _DELETE_ORDER = (

@@ -619,7 +619,10 @@ class SoftAllocationChannel:
 
 #: The five channels, in the order the steel is DRAWN -- which is also the order a
 #: manager reads them: the customer's own material first (the ruling), then the two
-#: company sources, then the one that drew a different product, then the gap.
+#: company sources in THEIR draw order (reserved before shared: a line takes its
+#: own assignment before it competes for the pool, see `app.engines.allocation`),
+#: then the one that drew a different product, then the gap. The tuple order is
+#: the order the API emits and the screen renders, so it has to be the true one.
 #:
 #: `from_own_assignment` is RESERVED company steel: a HARD/HYBRID line's own Oracle
 #: assignment, or a SOFT customer's assignments pooled across its own wells. The
@@ -653,13 +656,13 @@ SOFT_ALLOCATION_CHANNELS = (
         "company stock)",
     ),
     (
-        FROM_POOL,
-        "Drawn from the Business Unit's shared unassigned pool (soft allocation)",
-    ),
-    (
         FROM_ASSIGNMENT,
         "Drawn from an Oracle assignment reserved to this customer (its own "
         "line's under HARD/HYBRID; pooled across its own wells under SOFT)",
+    ),
+    (
+        FROM_POOL,
+        "Drawn from the Business Unit's shared unassigned pool (soft allocation)",
     ),
     (VIA_SUBSTITUTE, "Satisfied via an approved substitute product"),
     (NOT_SATISFIED, "Not satisfied by any of the above"),

@@ -279,3 +279,40 @@ def test_the_allocator_ranks_by_the_key_not_by_the_order_it_is_handed(db_session
     )
 
     assert outcome.covered == {primary.id: True, contingency.id: False}
+
+
+def test_a_loser_left_waiting_on_a_substitute_approval_is_told_about_the_tie_too(
+    db_session,
+):
+    """The tie note belongs on the PENDING_APPROVAL branch as well: a line that
+    lost its own product at an equal ROS and now waits on a substitute approval
+    must still be told where its own product went."""
+    bu = _bu(db_session)
+    p = _product(db_session, grade="13CR80")
+    q = _product(db_session, grade="13CR110")
+    _stock(db_session, bu, p, 4000)
+    _stock(db_session, bu, q, 9000)
+    a, node_a, _, node_b = _two_customers(db_session, bu)
+    db_session.add(TechnicalSubstitution(from_product_id=p.id, to_product_id=q.id))
+    db_session.add(
+        CustomerSubstitutionRule(
+            customer_id=a.id, from_product_id=p.id, to_product_id=q.id, allowed=True
+        )
+    )
+    db_session.flush()
+    contingency = _line(
+        db_session, _well(db_session, node_a, "W-Backup"), p, 4000,
+        ros_date=ROS, profile="Contingency", line_id=LOW_ID,
+    )
+    _line(
+        db_session, _well(db_session, node_b, "W-Main"), p, 4000,
+        ros_date=ROS, line_id=HIGH_ID,
+    )
+    request_approval(db_session, contingency, p.id, q.id)   # raised, not decided
+
+    recompute_business_unit(db_session, bu)
+
+    lost = _verdict(db_session, contingency)
+    assert lost.status == CoverageStatus.PENDING_APPROVAL
+    assert "needs well-level approval" in lost.reason
+    assert "drawn ahead of it at the same ROS by W-Main (Bravo, Primary)" in lost.reason

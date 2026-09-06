@@ -998,7 +998,7 @@ class SoftAllocationChannelOut(BaseModel):
 
     The FIVE channels partition the horizon's demand exactly, in the order the steel
     is drawn. `key` is the stable machine name (`from_customer_owned` |
-    `from_shared_pool` | `from_own_assignment` | `via_substitute` | `not_satisfied`);
+    `from_own_assignment` | `from_shared_pool` | `via_substitute` | `not_satisfied`);
     `label` is renderable prose.
 
     `from_customer_owned` is quantity drawn from the CUSTOMER'S OWN uploaded

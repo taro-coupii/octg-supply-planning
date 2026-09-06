@@ -1204,3 +1204,55 @@ def test_a_soft_customers_own_pooled_reservation_is_reported_as_reserved_not_as_
     # And the label says what the channel now holds.
     assert "reserved to this customer" in channels["from_own_assignment"]["label"]
     assert "pooled across its own wells under SOFT" in channels["from_own_assignment"]["label"]
+
+
+def test_a_partially_covered_soft_line_keeps_its_reserved_draw_out_of_the_shared_pool(
+    client_world,
+):
+    """The subtraction the previous test cannot see. Acme (SOFT) holds a 3,000
+    reservation on L1 and Beta (SOFT) a 2,000 one on L4, so of P-A's 6,000 only
+    1,000 is genuinely unassigned. L1 (5,000) draws its 3,000 block and the whole
+    1,000 shared pool and is still 1,000 short.
+
+    The engine records L1's pool draw as 4,000 (block included) and the block as
+    3,000. If the Executive forgot to take the block back out, the shared-pool
+    channel would show 2,000 for a Business Unit that only ever had 1,000 of
+    unassigned steel, and the shortfall would shrink to match -- on the one screen
+    management reads. So: assignment 3,000 + 1,000, pool 1,000, unmet 2,000.
+    """
+    client, session_factory, w = client_world
+    db = session_factory()
+    try:
+        from app.engines.coverage import recompute_customer
+        from app.models import Customer
+
+        for line_id, qty in ((w.l1_id, 3000), (w.l4_id, 2000)):
+            db.add(
+                InventoryAssignment(
+                    demand_line_id=line_id,
+                    product_id=w.p_a_id,
+                    quantity=qty,
+                    source_system="synthetic",
+                )
+            )
+        db.flush()
+        recompute_customer(db, db.get(Customer, w.acme_id))
+        db.commit()
+    finally:
+        db.close()
+
+    body = _exec(client)
+    channels = _channels(body)
+    assert channels["from_own_assignment"]["quantity"] == 4000
+    assert channels["from_shared_pool"]["quantity"] == 1000
+    assert channels["not_satisfied"]["quantity"] == 2000
+    assert sum(c["quantity"] for c in channels.values()) == 7000
+    # And the channels come out in the order the steel is drawn: own material,
+    # then reserved company steel, then the shared pool.
+    assert [c["key"] for c in body["soft_allocation_coverage"]["channels"]] == [
+        "from_customer_owned",
+        "from_own_assignment",
+        "from_shared_pool",
+        "via_substitute",
+        "not_satisfied",
+    ]

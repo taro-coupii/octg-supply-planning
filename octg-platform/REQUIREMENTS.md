@@ -40,8 +40,8 @@ in `../MVP_COMPROMISES.md`.
 3. **The BU is an absolute boundary and the unit of allocation** — inventory never crosses a
    BU, and inside one it is divided ONCE across every customer below it, earliest ROS first
    (ruled 2026-09-06). At an equal ROS a Primary line is served before a Contingency line,
-   then line id — a fixed order, not a priority, and the line that lost such a tie is told
-   so in its reason (ruled 2026-09-06; `app/engines/allocation.py allocation_order`). What
+   then line id — a fixed order, not a priority, and a line left short by such a tie is
+   told so in its reason (ruled 2026-09-06; `app/engines/allocation.py allocation_order`). What
    stays customer-private is ownership, not pooling: customer-owned stock and Oracle
    assignments are never drawn by anyone else
 4. **Customer-owned inventory is consumed before company inventory**, and is never shared
@@ -179,7 +179,7 @@ Cross-cutting rules settled by rulings during development:
 - **Deployment**: Render (`render.yaml`, free plan — spins down after ~15 min idle).
   Push auto-redeploys. The DB is the in-image `dev.db` (every redeploy resets to the demo
   state). `VITE_API_BASE=""` yields relative URLs in production
-- **Testing**: pytest (currently 751 tests) pinning identities and boundaries.
+- **Testing**: pytest (currently 759 tests) pinning identities and boundaries.
   Agent-written tests are cross-checked from the outside against real data
 
 ## 6. Out of scope / deferred (pre-pilot backlog)

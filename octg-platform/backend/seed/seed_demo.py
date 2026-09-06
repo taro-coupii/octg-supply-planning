@@ -371,8 +371,11 @@ ON_HAND_SHARE_OF_12M = {
 #: Item 3 is the one substitute-side item that must hold steel AFTER every
 #: confirmed line of the three-year programme has drawn (that residual is what an
 #: approved substitute draws on, since the pass evaluates every confirmed well at
-#: once). Two item-2 lines' worth -- the two approved 2->3 proposals.
-ITEM_3_HEADROOM = 2 * QTY_4[1]
+#: once). Sized for the two approved 2->3 proposals at their LARGEST jittered
+#: size, plus one more 13-3/8 line: the well the demo scenario firms up (story 2)
+#: brings its own item-3 line into scope, and the preview must not quietly starve
+#: an approved substitute to pay for it.
+ITEM_3_HEADROOM = 3 * round(QTY_4[1] * 1.25)
 #: Item 8's residual after every confirmed line has drawn: what a 9->8
 #: substitute candidate can actually see. Just above a typical 13CR tubing line
 #: (3,500 m nominal, jittered), so the PENDING 9->8 proposals fit under it and
@@ -664,14 +667,15 @@ def _seed_hard_assignments(db, bu, products, equinor, akerbp):
         print("WARNING: no product pair found for the hard-assignment "
               "coverage demo", file=sys.stderr)
 
-    # ---- case 2: item 8 (substitute FOR item 9) scarce + hard-claimed ----
-    # One AkerBP well hard-claims an item-8 parcel and the remaining free
-    # pool is smaller than any item-9 line needs, so an uncovered item-9
-    # line's candidate shows "Blocked -- Oracle release required":
-    # available < required <= available + hard_assigned
-    # (substitution.BLOCK_ORACLE_RELEASE). This deliberately makes item 8
-    # SCARCE -- its own late-ROS wells go short too, which is the same
-    # hard-allocation pain seen from the other side.
+    # ---- case 2: item 8 (substitute FOR item 9) hard-claimed ---------------
+    # One AkerBP well hard-claims an item-8 parcel. Item 8 is sized so that,
+    # after every confirmed item-8 line has drawn, a residual of
+    # `ITEM_8_RESIDUAL` is left for substitutes: the ONE approved 9->8 line is
+    # chosen larger than that residual but within residual + the claim, so its
+    # candidate shows "Blocked -- Oracle release required"
+    # (available < required <= available + hard_assigned,
+    # substitution.BLOCK_ORACLE_RELEASE), while the pending 9->8 proposals fit
+    # under the residual and come back PendingApproval.
     ak8 = [
         l for l in _confirmed_lines(8, akerbp)
         if l.ros_date <= _month_offset(8)
@@ -827,7 +831,7 @@ def _seed_substitution_proposals(db, products):
     db.flush()
 
 
-def _seed_demo_scenario(db, bu, products, equinor, akerbp):
+def _seed_demo_scenario(db, bu, products, akerbp):
     """ONE draft scenario with an override from every family, resolved by well
     name and product so a re-seed rebuilds it (it used to be hand-made through
     the API against fixed ids, and a `--reset` silently dropped it).
@@ -892,34 +896,54 @@ def _seed_demo_scenario(db, bu, products, equinor, akerbp):
             "Order Requirements into a physical runout"
         )
 
-    # (2) acceleration -- a Planned year-3 well's tubing pulled into next year,
-    #     and the well itself firmed up so the pull-in enters the confirmed scope.
-    fast_well = _well("SK-C09")
-    fast_line = _line(fast_well, 8)
+    # (2) acceleration -- a Planned AkerBP well of the 10-3/4 design pulled
+    #     forward and firmed up, so the pull-in enters the confirmed scope. Its
+    #     10-3/4, 7" and 4-1/2 strings are the SHORT items, so the preview opens
+    #     gaps. Deliberately NOT a well of a design that carries item 8: firming
+    #     one of those adds item-8 demand that consumes the residual every
+    #     pending 9->8 substitute depends on, which silently defeated story (6).
+    design_5 = {products[n].id for n in (1, 3, 4, 7, 10)}
+    fast_well = next(
+        (
+            w for w in (
+                db.query(Well)
+                .join(PlanningNode, Well.planning_node_id == PlanningNode.id)
+                .filter(
+                    Well.demand_status == DemandStatus.PLANNED,
+                    PlanningNode.customer_id == akerbp.id,
+                )
+                .order_by(Well.name)
+            )
+            if {l.product_id for l in w.demand_lines} == design_5
+        ),
+        None,
+    )
+    fast_line = _line(fast_well, 10)
     if fast_line is not None:
         pulled_to = _month_offset(12, day=1)
         _add(ScenarioOverride(
             scenario_id=scenario.id, target_kind=ScenarioTargetKind.DEMAND_LINE,
             target_demand_line_id=fast_line.id, field_name="ros_date",
             value_date=pulled_to,
-            note=(f"SK-C09 campaign accelerated: "
+            note=(f"{fast_well.name} campaign accelerated: "
                   f"{fast_line.ros_date:%b %Y} -> {pulled_to:%b %Y}"),
         ), None)
         _add(ScenarioOverride(
             scenario_id=scenario.id, target_kind=ScenarioTargetKind.WELL,
             target_well_id=fast_well.id, field_name="demand_status",
             value_text=DemandStatus.CONFIRMED.value,
-            note=("SK-C09 campaign firms up — enters the confirmed programme "
-                  "(pairs with its ROS pull-in)"),
+            note=(f"{fast_well.name} campaign firms up — enters the confirmed "
+                  "programme (pairs with its ROS pull-in)"),
         ), None)
         stories[-2:] = []
         stories.append(
-            f"acceleration — SK-C09 {fast_line.quantity:,.0f} Mtr of "
-            f"{products[8].description} pulled from {fast_line.ros_date:%b %Y} to "
+            f"acceleration — {fast_well.name} {fast_line.quantity:,.0f} Mtr of "
+            f"{products[10].description} pulled from {fast_line.ros_date:%b %Y} to "
             f"{pulled_to:%b %Y}, and the well firmed up into the confirmed programme"
         )
     else:
-        print("  scenario: no SK-C09 item-8 line; acceleration story skipped")
+        print("  scenario: no Planned AkerBP well of the 10-3/4 design; "
+              "acceleration story skipped")
 
     # (3) programme slip -- a confirmed well drops to Budgeted and frees its steel.
     slip_well = _well("SK-A04")
@@ -1070,7 +1094,7 @@ def main(argv=None):
 
         # The what-if scenario LAST, against the final picture (its approval
         # override points at a proposal raised just above).
-        _seed_demo_scenario(db, bu, products, equinor, akerbp)
+        _seed_demo_scenario(db, bu, products, akerbp)
         db.commit()
 
         wells = db.query(Well).count()

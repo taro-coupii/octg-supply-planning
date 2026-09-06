@@ -90,6 +90,7 @@ def _shortage_phrase(
     drawn_from_pool: float = 0.0,
     reserved_elsewhere: float = 0.0,
     drawn_from_customer_owned: float = 0.0,
+    drawn_from_block: float = 0.0,
 ) -> str:
     """Why this line's own product could not cover it, worded for the policy.
 
@@ -117,6 +118,14 @@ def _shortage_phrase(
     so the substitute path and the own-product path give a planner ONE instruction
     rather than two paraphrases of it.
 
+    `drawn_from_block` is the part of `drawn_from_pool` that a SOFT customer took
+    from its OWN Oracle assignments, pooled across its own wells (owner ruling
+    2026-09-06: reserved steel is called reserved, on this screen exactly as on
+    the Executive Dashboard). Calling those metres "the unassigned remainder"
+    was false -- they are assigned, to this customer -- so the SOFT sentences
+    split the draw into the reserved part and the genuinely shared part whenever
+    a reserved part exists, and keep their old single clause when none does.
+
     `drawn_from_customer_owned` is the quantity taken from the CUSTOMER'S OWN
     uploaded stock, which is drawn before anything else under every policy (see
     `app.engines.allocation`). It HAS to be stated, and for a sharper reason than
@@ -142,6 +151,28 @@ def _shortage_phrase(
     )
 
     if policy == AllocationPolicy.SOFT:
+        block = min(max(0.0, drawn_from_block), max(0.0, drawn_from_pool))
+        shared = max(0.0, drawn_from_pool - block)
+
+        def _soft_draw_clause(shared_name: str) -> str:
+            """'<n> of <qty> drawn from ...' with the reserved part named when
+            there is one; `shared_name` is what the caller calls the shared tier."""
+            if block > 0 and shared > 0:
+                return (
+                    f"{block:g} of {line.quantity:g} drawn from this customer's own "
+                    f"pooled Oracle reservation and {shared:g} from {shared_name} "
+                    "in ROS order"
+                )
+            if block > 0:
+                return (
+                    f"{block:g} of {line.quantity:g} drawn from this customer's own "
+                    "pooled Oracle reservation in ROS order"
+                )
+            return (
+                f"{drawn_from_pool:g} of {line.quantity:g} drawn from {shared_name} "
+                "in ROS order"
+            )
+
         if reserved_elsewhere > 0:
             label = line.product.description or line.product.id
             base = (
@@ -154,9 +185,8 @@ def _shortage_phrase(
                 base += f"; {owned_clause}"
             if drawn_from_pool > 0:
                 base += (
-                    f"; {drawn_from_pool:g} of {line.quantity:g} drawn from the "
-                    f"unassigned remainder in ROS order, still short by "
-                    f"{line.quantity - drawn_from_pool - owned:g}"
+                    f"; {_soft_draw_clause('the unassigned remainder')}, still short "
+                    f"by {line.quantity - drawn_from_pool - owned:g}"
                 )
             elif owned_clause:
                 base += f", still short by {line.quantity - owned:g}"
@@ -192,9 +222,8 @@ def _shortage_phrase(
             )
         if drawn_from_pool > 0:
             base += (
-                f"; {drawn_from_pool:g} of {line.quantity:g} drawn from the pool in "
-                f"ROS order, still short by "
-                f"{line.quantity - drawn_from_pool - owned:g}"
+                f"; {_soft_draw_clause('the shared pool' if block > 0 else 'the pool')}, "
+                f"still short by {line.quantity - drawn_from_pool - owned:g}"
             )
         elif owned_clause:
             base += f", still short by {line.quantity - owned:g}"
@@ -1304,6 +1333,7 @@ def compute_business_unit_coverage(
                 (owner_id, line.product_id), 0.0
             ),
             drawn_from_customer_owned=drawn_from_customer_owned.get(line.id, 0.0),
+            drawn_from_block=drawn_from_block.get(line.id, 0.0),
         )
         if line.id in tie_note_by_line:
             shortage = f"{shortage}; {tie_note_by_line[line.id]}"

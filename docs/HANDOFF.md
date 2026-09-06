@@ -697,4 +697,43 @@ Executive coverage 63.3% (MT). Two surplus rows (item 3: 2,250, item 8:
 now lives in the private repository under `frontend/manual-src/` (it is not
 mirrored here: the section texts are bilingual).
 
+### §25 addendum: the adversarial review (14 agents, 21 findings → top 5 verified)
+
+What reproduced, and what was done (759 tests green):
+1. **A contradiction in the reason text (owner ruling A)**: metres a SOFT
+   customer drew from its own pooled Oracle reservation were described as
+   "drawn from the unassigned remainder", while ② had just made the Executive
+   call the same metres reserved. `_shortage_phrase` now receives
+   `drawn_from_block` and, only when a reserved part exists, writes "3000 of
+   5000 drawn from this customer's own pooled Oracle reservation and 1000 from
+   the unassigned remainder (/ the shared pool)". Lines with no reserved draw
+   keep their old sentence. Two tests.
+2. **The scenario's story (2) was defeating story (6)**: firming SK-C09 (a
+   design that carries item 8) consumed item 8's residual, so the approval in
+   (6) previewed as PendingApproval → Unrecoverable. Story (2) now firms an
+   AkerBP Planned well of the 10-3/4 design (SK-B10): its 4-1/2 tubing, 4,200 m,
+   pulled to Sep 2027. Preview confirms (6) as PendingApproval →
+   CoveredViaSubstitute.
+3. **`ITEM_3_HEADROOM` 2,000 → 3,750**: the two approved 2→3 lines at their
+   largest jitter plus the 13-3/8 line of the well story (2) firms up. 2,000 was
+   below the actual 2,050 drawn and survived only through revision drift.
+4. **Executive channel order**: `SOFT_ALLOCATION_CHANNELS` claimed "draw order"
+   but emitted pool before assignment. Now own → assignment → pool → substitute
+   → not satisfied (the screen renders API order).
+5. **Three unpinned behaviours now have tests**: `from_pool = pool − block` on a
+   partially covered SOFT line, the tie note on a PendingApproval loser, and
+   `tests/test_seed_demo_shape.py`, which runs `seed_demo` and asserts every
+   verdict kind, both Oracle stories, the scenario preview keeping story (6)
+   alive, and item 2's safety dip being amber.
+6. Small things: the stale "users is deliberately absent" comment in
+   `seed_from_workbook.py`, the pre-re-baseline case-2 comment, an unused
+   parameter, REQUIREMENTS principle 3 saying "a line left short by such a tie".
+
+Left as known limits: a line that lost SUBSTITUTE stock at an equal ROS gets no
+tie note (the note covers own-product contests only); when C-17 rescues the
+winner and releases its own-product draw, the loser's own-product verdict is
+not re-evaluated (an existing C-17 property). **The re-baselined dev.db does
+hold one equal-ROS same-product pair of confirmed lines (JS-A02 / VF-A02, both
+Covered, so no note)** — §23's "no ties" described the previous dev.db.
+
 **Next**: C-12 / C-14 / login rate limiting, D02–D04.
