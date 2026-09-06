@@ -1145,3 +1145,62 @@ def test_home_dashboard_still_works(client_world):
     client, _sf, _w = client_world
     body = client.get("/dashboard/home").json()
     assert {w["name"] for w in body["uncovered_wells"]} == {"WELL-2"}
+
+
+def test_a_soft_customers_own_pooled_reservation_is_reported_as_reserved_not_as_shared_pool(
+    client_world,
+):
+    """Owner ruling 2026-09-06 (D01 follow-up ②). Acme is SOFT and gets a 3,000
+    Oracle assignment on L1. Soft allocation does not tie that steel to L1 -- it is
+    pooled across Acme's own wells -- but it IS reserved to Acme and no neighbour can
+    reach it, so the Executive block must not call it "shared unassigned pool".
+
+      P-A 6000 on hand, 3000 assigned to Acme -> shared pool 3000.
+      L1 (Acme, 5000): 3000 from its own pooled reservation + 2000 from the pool.
+      L4 (Beta, 1000): 1000 from the pool.
+
+    The reserved 3,000 lands in `from_own_assignment`; `from_shared_pool` is the
+    3,000 of genuinely unassigned steel; the five channels still partition the
+    7,000 of in-scope demand.
+    """
+    client, session_factory, w = client_world
+    db = session_factory()
+    try:
+        from app.engines.coverage import compute_customer_coverage, recompute_customer
+        from app.models import Customer
+
+        acme = db.get(Customer, w.acme_id)
+        db.add(
+            InventoryAssignment(
+                demand_line_id=w.l1_id,
+                product_id=w.p_a_id,
+                quantity=3000,
+                source_system="synthetic",
+            )
+        )
+        db.flush()
+        recompute_customer(db, acme)
+        db.commit()
+        # The projection carries the reserved part separately, and the pool figure
+        # still includes it (that is what "the pool" means to a SOFT pass).
+        mine = compute_customer_coverage(db, acme)
+        assert mine.consumed_from_assignment_block[w.l1_id] == 3000
+        assert mine.consumed_from_pool[w.l1_id] == 5000
+        # Under SOFT nothing is drawn line-by-line; the reservation is pooled.
+        assert all(q == 0 for q in mine.consumed_from_assignment.values())
+    finally:
+        db.close()
+
+    body = _exec(client)
+    channels = _channels(body)
+    assert channels["from_own_assignment"]["quantity"] == 3000
+    assert channels["from_shared_pool"]["quantity"] == 3000
+    assert channels["not_satisfied"]["quantity"] == 1000
+    assert channels["from_customer_owned"]["quantity"] == 0
+    assert channels["via_substitute"]["quantity"] == 0
+    assert sum(c["quantity"] for c in channels.values()) == body[
+        "soft_allocation_coverage"
+    ]["total_quantity"] == 7000
+    # And the label says what the channel now holds.
+    assert "reserved to this customer" in channels["from_own_assignment"]["label"]
+    assert "pooled across its own wells under SOFT" in channels["from_own_assignment"]["label"]

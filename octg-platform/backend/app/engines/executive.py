@@ -226,11 +226,14 @@ ON_ORDER_NOTE = (
 SOFT_ALLOCATION_NOTE = (
     "SOFT ALLOCATION COVERAGE -- what this platform's own allocation achieved. It "
     "is NOT Oracle's hard allocation and must not be read as one. 'From shared "
-    "pool' is quantity drawn from unassigned stock in the Business Unit; 'from "
-    "assignment' is quantity drawn from a demand line's own Oracle assignment, "
-    "which only happens for HARD and HYBRID customers (a SOFT customer ignores its "
-    "own assignments -- that is what pooling means); 'via substitute' is quantity "
-    "satisfied by a technically approved alternative product. What it does NOT "
+    "pool' is quantity drawn from the Business Unit's UNASSIGNED stock, which any "
+    "customer in the Business Unit may reach; 'from assignment' is quantity drawn "
+    "from an Oracle assignment reserved to this customer -- the line's own "
+    "assignment for a HARD or HYBRID customer, or, for a SOFT customer, its own "
+    "assignments pooled across its own wells (soft allocation does not tie them "
+    "to specific wells, but they are still that customer's reserved steel and no "
+    "neighbour may draw them); 'via substitute' is quantity satisfied by a "
+    "technically approved alternative product. What it does NOT "
     "mean: it is not a reservation. This platform creates no hard reservation of "
     "any kind, so a quantity shown as drawn from the pool is not held for that "
     "line and can be drawn by earlier demand on the next recompute. The figures "
@@ -595,9 +598,10 @@ class SoftAllocationChannel:
     """One way in-scope demand was satisfied (or was not), in quantity terms.
 
     FIVE channels partition the horizon's demand exactly, listed in the order the
-    steel is actually drawn: from the customer's OWN inventory, from the shared pool,
-    from a line's own Oracle assignment, via an approved substitute, and not
-    satisfied at all. `key` is the stable machine name, `label` is renderable.
+    steel is actually drawn: from the customer's OWN inventory, from an Oracle
+    assignment reserved to the customer, from the Business Unit's shared unassigned
+    pool, via an approved substitute, and not satisfied at all. `key` is the stable
+    machine name, `label` is renderable.
     """
 
     key: str
@@ -616,6 +620,17 @@ class SoftAllocationChannel:
 #: The five channels, in the order the steel is DRAWN -- which is also the order a
 #: manager reads them: the customer's own material first (the ruling), then the two
 #: company sources, then the one that drew a different product, then the gap.
+#:
+#: `from_own_assignment` is RESERVED company steel: a HARD/HYBRID line's own Oracle
+#: assignment, or a SOFT customer's assignments pooled across its own wells. The
+#: engine records a SOFT customer's pooled draw inside `consumed_from_pool` (that is
+#: what "the pool" meant to a per-customer pass) and separately in
+#: `consumed_from_assignment_block`; since D01 the shared pool and a customer's
+#: reservations are different tiers -- a neighbour can reach one and never the
+#: other -- so the block is moved here and `from_shared_pool` is strictly the
+#: Business Unit's unassigned steel (owner ruling 2026-09-06). Calling reserved
+#: steel "shared unassigned pool" on the one screen management reads would have
+#: been the same kind of misstatement the customer-owned channel exists to avoid.
 #: `from_customer_owned` is listed FIRST because it is drawn first: for the same
 #: product, customer-owned inventory is consumed ahead of any company steel and ahead
 #: of any Oracle assignment (see `app.engines.allocation`). Reading the channels top
@@ -637,8 +652,15 @@ SOFT_ALLOCATION_CHANNELS = (
         "Drawn from the customer's OWN inventory (consumed first, ahead of "
         "company stock)",
     ),
-    (FROM_POOL, "Drawn from the shared unassigned pool (soft allocation)"),
-    (FROM_ASSIGNMENT, "Drawn from the line's own Oracle assignment"),
+    (
+        FROM_POOL,
+        "Drawn from the Business Unit's shared unassigned pool (soft allocation)",
+    ),
+    (
+        FROM_ASSIGNMENT,
+        "Drawn from an Oracle assignment reserved to this customer (its own "
+        "line's under HARD/HYBRID; pooled across its own wells under SOFT)",
+    ),
     (VIA_SUBSTITUTE, "Satisfied via an approved substitute product"),
     (NOT_SATISFIED, "Not satisfied by any of the above"),
 )
@@ -1717,8 +1739,10 @@ def soft_allocation_coverage(
     One `compute_customer_coverage` call per customer in scope -- the read-only
     computing half of the platform's single coverage implementation -- and the
     channel quantities are read off `CustomerCoverage.consumed_from_pool` /
-    `.consumed_from_assignment`, which are `app.engines.allocation
-    .AllocationOutcome`'s own maps carried out of that pass unchanged. Nothing
+    `.consumed_from_assignment` / `.consumed_from_assignment_block`, which are
+    `app.engines.allocation.AllocationOutcome`'s own maps carried out of that pass
+    unchanged (the block is the reserved part of a SOFT customer's pool draw, and
+    is reported under the assignment channel -- see `SOFT_ALLOCATION_CHANNELS`). Nothing
     here re-implements a policy, re-sorts by ROS, or decides what an assignment
     means. That constraint is not stylistic: two implementations of the allocation
     rules would drift, and a management summary is the one consumer with nothing
@@ -1822,12 +1846,16 @@ def soft_allocation_coverage(
             max(0.0, computed.consumed_from_customer_owned.get(line.id, 0.0)),
             line.quantity,
         )
+        # Reserved steel: a HARD/HYBRID line's own assignment, or the part of a SOFT
+        # customer's pool draw that came from its own pooled assignments (the
+        # engine records that part in BOTH maps; it is counted once, here).
+        block = max(0.0, computed.consumed_from_assignment_block.get(line.id, 0.0))
         from_assignment = min(
-            max(0.0, computed.consumed_from_assignment.get(line.id, 0.0)),
+            max(0.0, computed.consumed_from_assignment.get(line.id, 0.0)) + block,
             line.quantity - from_customer_owned,
         )
         from_pool = min(
-            max(0.0, computed.consumed_from_pool.get(line.id, 0.0)),
+            max(0.0, computed.consumed_from_pool.get(line.id, 0.0) - block),
             line.quantity - from_customer_owned - from_assignment,
         )
         channel_pairs[FROM_CUSTOMER_OWNED].append((product, from_customer_owned))

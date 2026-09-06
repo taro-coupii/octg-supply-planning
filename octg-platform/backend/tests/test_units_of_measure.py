@@ -628,16 +628,21 @@ def test_soft_allocation_channel_shares_are_withheld_across_mixed_units(db_sessi
     assert len(block.channels) == 5
     assert [channel.pct for channel in block.channels] == [None] * 5
     assert "units of measure" in block.reason
-    # The defensible figures are still there, per unit. This customer is SOFT, so
-    # every satisfied quantity comes from the shared pool and NOTHING comes from its
-    # own assignment -- which is the pooling guarantee, visible here as a number.
+    # The defensible figures are still there, per unit. This customer is SOFT: its
+    # 400 assignment is not tied to the line (pooling), but it IS steel reserved to
+    # this customer, and since the owner's ruling of 2026-09-06 it is reported under
+    # the assignment channel rather than as "shared unassigned pool". The line drew
+    # 400 of its own pooled reservation and the remaining 600 from the shared pool.
     from app.engines.executive import FROM_ASSIGNMENT, FROM_POOL
 
     by_key = {channel.key: channel for channel in block.channels}
     assert {
         e.unit_of_measure: e.quantity for e in by_key[FROM_POOL].quantities_by_unit
-    } == {UnitOfMeasure.MTR: 1000.0, UnitOfMeasure.MT: 2000.0}
-    assert by_key[FROM_ASSIGNMENT].quantity == 0.0
+    } == {UnitOfMeasure.MTR: 600.0, UnitOfMeasure.MT: 2000.0}
+    assert {
+        e.unit_of_measure: e.quantity
+        for e in by_key[FROM_ASSIGNMENT].quantities_by_unit
+    } == {UnitOfMeasure.MTR: 400.0, UnitOfMeasure.MT: 0.0}
 
     # And the coverage block's own percentage obeys the same rule.
     coverage = executive_summary(db_session, customer_id=customer.id).coverage

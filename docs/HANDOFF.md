@@ -595,5 +595,41 @@ id**. No customer priority (ROS → profile → id).
 
 **Effect on the demo**: none (no ties; dev.db verdicts and reasons diff to zero).
 
-**Next**: ② the Executive label for a SOFT customer's own reservation, ③ the demo
-re-baseline, C-12 / C-14 / login rate limiting, D02–D04.
+**Next**: ③ the demo re-baseline, C-12 / C-14 / login rate limiting, D02–D04.
+
+## 24. 2026-09-06: a SOFT customer's reservation leaves the Executive "shared pool" channel (owner ruling)
+
+**Problem**: what a SOFT customer drew from its own Oracle reservation block was
+reported in the Executive soft-allocation breakdown as "Drawn from the shared
+unassigned pool". Before D01 "the pool" was per customer, so that was true; D01
+split the Business Unit's shared pool (a neighbour can reach it) from a
+customer's reservation block (no neighbour can), so assigned, non-shared steel
+was being called "unassigned shared pool".
+
+**Ruling (AskUserQuestion)**: option A — move the block draw **into the Oracle
+assignment channel** and soften its label to "an Oracle assignment reserved to
+this customer (its own line's under HARD/HYBRID; pooled across its own wells
+under SOFT)". Still five channels.
+
+**Implementation (751 tests)**:
+1. `CustomerCoverage` / `BusinessUnitCoverage` gained
+   `consumed_from_assignment_block` — the engine's existing
+   `AllocationOutcome.consumed_from_assignment_block`, carried through the
+   projection. `consumed_from_pool` keeps its meaning (for SOFT, the customer's
+   pool INCLUDING the block); the shared-only figure is the difference.
+2. `app/engines/executive.py`: `from_own_assignment` = line assignment + block,
+   `from_shared_pool` = pool − block. The five-channel partition of demand is
+   unchanged. Label, `SOFT_ALLOCATION_NOTE` and the schema docstring updated. The
+   screen takes labels from the API, so no frontend change.
+3. Tests: `test_executive_dashboard.py` gains the case of a SOFT customer's 3,000
+   reservation landing in the assignment channel; the mixed-unit test in
+   `test_units_of_measure.py` had pinned the pre-ruling meaning and follows the
+   new one.
+
+**Effect on the demo**: none (Equinor, the SOFT customer, holds no Oracle
+reservation). **Reason text left as is**: a short SOFT line still says "drawn
+from the pool", which is the customer's pool (block included) in the
+long-standing sense; aligning it with the Executive split waits for SOFT
+reservations to appear in real data.
+
+**Next**: ③ the demo re-baseline, C-12 / C-14 / login rate limiting, D02–D04.

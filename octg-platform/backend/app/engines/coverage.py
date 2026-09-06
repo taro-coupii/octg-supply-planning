@@ -529,9 +529,16 @@ class CustomerCoverage:
     #: so a caller outside this pass (the substitution-candidates route) can
     #: annotate candidates identically. See `_hard_assigned_for_substitutes`.
     hard_assigned_by_product: dict[str, float] = field(default_factory=dict)
-    #: {demand_line_id: qty drawn from the shared UNASSIGNED pool of the line's own
-    #: product}, straight from `app.engines.allocation.AllocationOutcome
-    #: .consumed_from_pool`. Includes PARTIAL draws that did not cover the line.
+    #: {demand_line_id: qty drawn from the POOL of the line's own product}, straight
+    #: from `app.engines.allocation.AllocationOutcome.consumed_from_pool`. Includes
+    #: PARTIAL draws that did not cover the line.
+    #:
+    #: "The pool" here is what the per-customer pass always meant by it: the
+    #: Business Unit's shared unassigned steel, PLUS -- for a SOFT customer -- its
+    #: own Oracle assignments pooled across its own wells. Since D01 those are two
+    #: different tiers (a neighbour can reach the first and never the second), so
+    #: the second is ALSO reported separately in `consumed_from_assignment_block`;
+    #: the shared-only figure is `consumed_from_pool - consumed_from_assignment_block`.
     #:
     #: This is what "soft allocation" means in quantity terms -- steel taken from a
     #: pool nobody had earmarked -- and it is surfaced HERE rather than recomputed
@@ -544,6 +551,14 @@ class CustomerCoverage:
     #: construction: `_assignment_context` hands no assignments to a soft pass,
     #: which is exactly the pooling guarantee.
     consumed_from_assignment: dict[str, float] = field(default_factory=dict)
+    #: {demand_line_id: the part of `consumed_from_pool` that came from a SOFT
+    #: customer's OWN Oracle assignments, pooled across its own wells}, from
+    #: `AllocationOutcome.consumed_from_assignment_block`. Empty for HARD and
+    #: HYBRID customers, whose assignments are drawn line by line and reported in
+    #: `consumed_from_assignment`. Reported so a management summary can call
+    #: reserved steel reserved (owner ruling 2026-09-06): the Executive Dashboard
+    #: shows it under the Oracle-assignment channel, not as "shared unassigned pool".
+    consumed_from_assignment_block: dict[str, float] = field(default_factory=dict)
     #: {demand_line_id: qty drawn from the CUSTOMER'S OWN uploaded stock of the
     #: line's own product}, from `AllocationOutcome.consumed_from_customer_owned`.
     #: Drawn before either of the other two under every allocation policy.
@@ -594,6 +609,7 @@ class BusinessUnitCoverage:
     hard_assigned_by_product: dict[str, dict[str, float]] = field(default_factory=dict)
     consumed_from_pool: dict[str, float] = field(default_factory=dict)
     consumed_from_assignment: dict[str, float] = field(default_factory=dict)
+    consumed_from_assignment_block: dict[str, float] = field(default_factory=dict)
     consumed_from_customer_owned: dict[str, float] = field(default_factory=dict)
 
     def for_customer(self, customer_id: str) -> CustomerCoverage:
@@ -645,6 +661,11 @@ class BusinessUnitCoverage:
             },
             consumed_from_assignment={
                 k: v for k, v in self.consumed_from_assignment.items() if k in mine
+            },
+            consumed_from_assignment_block={
+                k: v
+                for k, v in self.consumed_from_assignment_block.items()
+                if k in mine
             },
             consumed_from_customer_owned={
                 k: v for k, v in self.consumed_from_customer_owned.items() if k in mine
@@ -1448,6 +1469,7 @@ def compute_business_unit_coverage(
         hard_assigned_by_product={k: dict(v) for k, v in hard_assigned_by_product.items()},
         consumed_from_pool=dict(drawn_from_pool),
         consumed_from_assignment=dict(drawn_from_assignment),
+        consumed_from_assignment_block=dict(drawn_from_block),
         consumed_from_customer_owned=dict(drawn_from_customer_owned),
     )
 

@@ -1036,9 +1036,10 @@ class SoftAllocationCoverageOut(BaseModel):
     cannot be mistaken for the Oracle figure.
 
     WHAT IT MEANS: of the in-scope demand with an ROS inside `horizon_months`, how
-    much was drawn from the shared unassigned pool, how much from a line's own
-    Oracle assignment, how much satisfied via an approved substitute, and how much
-    not satisfied at all.
+    much was drawn from the Business Unit's shared unassigned pool, how much from an
+    Oracle assignment reserved to the customer (a HARD/HYBRID line's own, or a SOFT
+    customer's pooled across its own wells), how much satisfied via an approved
+    substitute, and how much not satisfied at all.
 
     WHAT IT DOES NOT MEAN: it is not a reservation. This platform creates no hard
     reservation of any kind, so a quantity shown as drawn from the pool is not held

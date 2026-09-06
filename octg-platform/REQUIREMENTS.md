@@ -179,7 +179,7 @@ Cross-cutting rules settled by rulings during development:
 - **Deployment**: Render (`render.yaml`, free plan — spins down after ~15 min idle).
   Push auto-redeploys. The DB is the in-image `dev.db` (every redeploy resets to the demo
   state). `VITE_API_BASE=""` yields relative URLs in production
-- **Testing**: pytest (currently 750 tests) pinning identities and boundaries.
+- **Testing**: pytest (currently 751 tests) pinning identities and boundaries.
   Agent-written tests are cross-checked from the outside against real data
 
 ## 6. Out of scope / deferred (pre-pilot backlog)
