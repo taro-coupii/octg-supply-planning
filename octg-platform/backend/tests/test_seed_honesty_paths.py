@@ -827,8 +827,8 @@ def test_the_seed_contains_contingency_demand(seeded):
 def test_primary_and_contingency_coexist_inside_a_confirmed_well(seeded):
     """The product owner named this as the ROUTINE case, so the seed must contain it.
 
-        confirmed の well の中に primary / contingency の別 profile の demand が
-        存在する事は日常的にある
+        Within a confirmed well it is an everyday occurrence for demand of both
+        the primary and the contingency profile to coexist.
 
     It is also the reason `DemandProfile` STAYED on `DemandLine` while `DemandStatus`
     moved to `Well`: profile genuinely varies line by line, status does not. Without a

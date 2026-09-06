@@ -2,7 +2,8 @@
 
 The product owner's requirement, verbatim in the part that matters:
 
-    同じprodcutではFIFOよりcustomer owned inventoryを先に消化する事が優先される
+    For the same product, consuming customer-owned inventory takes priority
+    over FIFO.
 
 For the same product, consuming customer-owned inventory takes priority over the
 ordinary draw order. Three separate claims come out of that, and this module pins
