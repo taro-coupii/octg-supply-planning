@@ -1001,7 +1001,10 @@ export default function ScenarioEditor() {
           </h1>
           <p className="scenario-sub">
             {scenario.customer_name}
-            {scenario.created_by ? ` · created by ${scenario.created_by}` : ""} ·
+            {scenario.created_by_user_name
+              ? ` · created by ${scenario.created_by_user_name}`
+              : ""}
+            {scenario.created_by ? ` · on behalf of ${scenario.created_by}` : ""} ·
             shared with everyone on the project
           </p>
         </div>

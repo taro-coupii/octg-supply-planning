@@ -361,7 +361,13 @@ def test_runout_series_decreases_and_identifies_runout_month(db_session):
     assert well_b.coverage_status == CoverageStatus.UNCOVERED.value
 
     rows = mrp_summary(db_session)
-    assert [r.quantity for r in rows] == [5000]
+    # F04 (ruling 2026-09-06): the figure is the NET shortfall. Well B's line
+    # demanded 5000 and the pool's remaining 2000 was drawn for it, so a mill
+    # order has to cover 3000 -- not the whole line, which would count the 2000
+    # both as consumed stock and as steel to order.
+    assert [r.quantity for r in rows] == [3000]
+    assert rows[0].demand_quantity == 5000
+    assert rows[0].drawn_company == 2000
     assert rows[0].demand_line_ids == [line_b.id]
 
 

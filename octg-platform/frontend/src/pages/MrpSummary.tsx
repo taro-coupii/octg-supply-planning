@@ -23,6 +23,18 @@ export function isPastDay(value: string) {
   return value.slice(0, 10) < todayIso();
 }
 
+/** The three tiers behind "drawn from stock", shown only when non-zero. */
+function DrawBreakdown({ r }: { r: MrpRecommendation }) {
+  const parts: string[] = [];
+  if (r.drawn_customer_owned > 0)
+    parts.push(`customer-owned ${r.drawn_customer_owned.toLocaleString()}`);
+  if (r.drawn_company > 0) parts.push(`company ${r.drawn_company.toLocaleString()}`);
+  if (r.drawn_substitute > 0)
+    parts.push(`substitute ${r.drawn_substitute.toLocaleString()}`);
+  if (parts.length === 0) return null;
+  return <div className="mrp-draw-breakdown">{parts.join(" · ")}</div>;
+}
+
 function RecommendationTable({ rows }: { rows: MrpRecommendation[] }) {
   return (
     <div className="table-scroll">
@@ -30,7 +42,9 @@ function RecommendationTable({ rows }: { rows: MrpRecommendation[] }) {
         <thead>
           <tr>
             <th>Product</th>
-            <th>Quantity</th>
+            <th>Net shortfall</th>
+            <th>Demand</th>
+            <th>Drawn from stock</th>
             <th>ROS</th>
             <th>Required Ship Date</th>
             <th>Recommended Order Date</th>
@@ -46,7 +60,22 @@ function RecommendationTable({ rows }: { rows: MrpRecommendation[] }) {
                   {r.product_description ?? r.product_id}
                 </Link>
               </td>
-              <td className="num">{r.quantity.toLocaleString()}</td>
+              <td className="num">
+                <strong>{r.quantity.toLocaleString()}</strong>
+                {r.whole_line_ids.length > 0 && (
+                  <div className="date-past">
+                    {r.whole_line_ids.length} line(s) counted whole — recompute
+                    coverage for the net figure
+                  </div>
+                )}
+              </td>
+              <td className="num">{r.demand_quantity.toLocaleString()}</td>
+              <td className="num">
+                {(
+                  r.drawn_customer_owned + r.drawn_company + r.drawn_substitute
+                ).toLocaleString()}
+                <DrawBreakdown r={r} />
+              </td>
               <td className="num">{formatDay(r.ros_date)}</td>
               <td className="num">{formatDay(r.required_ship_date)}</td>
               <td className="num">

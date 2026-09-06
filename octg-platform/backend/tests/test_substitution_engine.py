@@ -313,7 +313,7 @@ def test_pending_approval_over_subscription_is_visible_and_reserves_nothing(db_s
     to Uncovered. It was originally fixed by RESERVING the quantity for the
     earliest-ROS line. The product owner has reversed that fix -- reserving is the
     platform creating a hard reservation, which it must never do
-    ("hard assignment cannot be made on the OCTG Platform").
+    (「OCTG Platform上でハード割り当てはできない」).
 
     So the test now pins the replacement, not the removal. It asserts MORE than
     before, and nothing it used to assert has been dropped:

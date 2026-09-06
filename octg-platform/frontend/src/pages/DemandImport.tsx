@@ -291,8 +291,11 @@ function ConflictPanel({
             <>
               <span className="import-approved-by">
                 Approved
+                {row.override_approved_by_user_name
+                  ? ` by ${row.override_approved_by_user_name}`
+                  : ""}
                 {row.override_approved_by
-                  ? ` by ${row.override_approved_by}`
+                  ? ` on behalf of ${row.override_approved_by}`
                   : ""}
                 {row.override_approved_at
                   ? ` on ${formatDay(row.override_approved_at)}`

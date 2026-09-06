@@ -51,6 +51,19 @@ class CoverageResult(Base):
         String(36), ForeignKey("products.id"), nullable=True
     )
 
+    # THE NET POSITION (adversarial review 2026-09-06, F04). What the line
+    # demanded when this verdict was computed, what the pass drew for it from each
+    # tier, and what is left with no steel behind it. `residual` is the figure MRP
+    # orders against; before these columns MRP re-ordered the WHOLE line and
+    # double-counted every partial draw. NULL on rows computed before the columns
+    # existed -- MRP then falls back to the whole line, i.e. the old behaviour,
+    # until the well is recomputed.
+    demand_quantity = Column(Float, nullable=True)
+    drawn_customer_owned = Column(Float, nullable=True)
+    drawn_company = Column(Float, nullable=True)
+    drawn_substitute = Column(Float, nullable=True)
+    residual = Column(Float, nullable=True)
+
     # MVP-COMPROMISE[C-08]: recompute is trigger-driven only -- no background job.
     #     WHY:    no scheduler exists in the MVP; computed_at (surfaced on the
     #             coverage grid since 2026-08-12) at least makes the age visible.

@@ -221,6 +221,11 @@ export interface SubstitutionApproval {
   status: SubstitutionApprovalStatus;
   requested_at: string;
   decided_at: string | null;
+  /** Server-recorded actors (F09); null for rows written before it existed. */
+  requested_by_user_id: string | null;
+  requested_by_user_name: string | null;
+  decided_by_user_id: string | null;
+  decided_by_user_name: string | null;
 }
 
 /** One row of GET /substitution-approvals (the approval queue). */
@@ -230,6 +235,7 @@ export interface ApprovalQueueRow {
   status: string;
   requested_at: string;
   decided_at: string | null;
+  decided_by_user_name: string | null;
   well_id: string | null;
   well_name: string | null;
   customer_name: string | null;
@@ -314,6 +320,14 @@ export interface MrpRecommendation {
   unrecoverable: boolean;
   reason: string;
   demand_line_ids: string[];
+  /** Breakdown behind `quantity` (the NET shortfall): demand less the three
+   * draws, line by line. `whole_line_ids` are counted whole because their
+   * verdict predates the net figures. */
+  demand_quantity: number;
+  drawn_customer_owned: number;
+  drawn_company: number;
+  drawn_substitute: number;
+  whole_line_ids: string[];
 }
 
 export interface ByItemDemandLine {
@@ -1020,7 +1034,10 @@ export interface ScenarioSummary {
   customer_id: string;
   customer_name: string;
   status: ScenarioStatus;
+  /** "On behalf of" text typed at creation; the actor is created_by_user_*. */
   created_by: string | null;
+  created_by_user_id: string | null;
+  created_by_user_name: string | null;
   created_at: string;
   updated_at: string | null;
   applied_at: string | null;
@@ -1492,8 +1509,11 @@ export interface DemandImportRow {
 
   override_approved: boolean;
   override_approved_at: string | null;
-  /** Attribution only — no server logic branches on it. */
+  /** "On behalf of" text as typed — no server logic branches on it. */
   override_approved_by: string | null;
+  /** Who actually approved: the authenticated user, recorded by the server. */
+  override_approved_by_user_id: string | null;
+  override_approved_by_user_name: string | null;
 
   /** What was live when the row was staged. baseline -> current -> file is three
    * values; the two-column diff only has room for two. */

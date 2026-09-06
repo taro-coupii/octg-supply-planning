@@ -29,6 +29,7 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
+from app.auth.deps import get_current_user
 from app.db import get_db
 from app.engines.overrides import (
     OVERRIDE_ENUM_VALUES,
@@ -48,6 +49,7 @@ from app.engines.scenario_apply import ScenarioNotApplicable, apply_to_base_plan
 from app.quantities import InvalidQuantity, validate_quantity
 from app.auth.scope import planner_bu
 from app.models import (
+    User,
     Customer,
     DemandLine,
     EDITABLE_SCENARIO_STATUSES,
@@ -121,6 +123,8 @@ def _summary(
         customer_name=scenario.customer.name,
         status=scenario.status,
         created_by=scenario.created_by,
+        created_by_user_id=scenario.created_by_user_id,
+        created_by_user_name=scenario.created_by_user_name,
         created_at=scenario.created_at,
         updated_at=scenario.updated_at,
         applied_at=scenario.applied_at,
@@ -190,7 +194,9 @@ def list_scenarios(
 
 
 @router.post("", response_model=ScenarioDetailOut, status_code=201)
-def create_scenario(body: ScenarioIn, db: Session = Depends(get_db)):
+def create_scenario(body: ScenarioIn, db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
     """Create a Draft scenario against one customer."""
     customer = db.get(Customer, body.customer_id)
     if customer is None:
@@ -202,6 +208,7 @@ def create_scenario(body: ScenarioIn, db: Session = Depends(get_db)):
         customer_id=customer.id,
         status=ScenarioStatus.DRAFT,
         created_by=body.created_by,
+        created_by_user_id=user.id,
     )
     db.add(scenario)
     db.commit()
@@ -399,7 +406,11 @@ def get_preview(scenario_id: str, db: Session = Depends(get_db)):
 
 
 @router.post("/{scenario_id}/apply", response_model=ScenarioApplyOut)
-def apply_scenario(scenario_id: str, db: Session = Depends(get_db)):
+def apply_scenario(
+    scenario_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
     """Write this scenario's overrides into production data. THIS ONE WRITES.
 
     Demand changes go through the revision machinery, so a DemandRevision and an
@@ -413,7 +424,7 @@ def apply_scenario(scenario_id: str, db: Session = Depends(get_db)):
     """
     scenario = _get_scenario(db, scenario_id)
     try:
-        result = apply_to_base_plan(db, scenario)
+        result = apply_to_base_plan(db, scenario, actor_user_id=user.id)
     except (ScenarioImmutable, ScenarioNotApplicable) as exc:
         db.rollback()
         raise HTTPException(status_code=409, detail=str(exc))

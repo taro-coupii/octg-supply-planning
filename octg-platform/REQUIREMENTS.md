@@ -206,12 +206,14 @@ notifications ordering deliberately left open until valuation lands.
    `/mrp/by-item`, tracked as C-15); C-12 (remove the AUTH_SECRET dev fallback); C-14
    (`?access_token=` download links); login rate limiting. Must be closed before pilot
    exposure regardless of pilot date — ordering vs. item 3 below intentionally undecided
-2b. From the 2026-09-06 adversarial review, ruled and queued: F04 net shortfall with a
+2b. From the 2026-09-06 adversarial review, ruled and queued: ~~F04 net shortfall with a
    breakdown (demand / customer-owned / company / substitute / residual) as the MRP figure;
    F05 recompute every affected customer in the BU on an assignment change; F06 decided
-   approvals immutable at the service layer (scenario apply included); F07 import
-   approvals bound to the revision they approved; F08 scenario apply requires the
-   previewed version; F09 actor recorded server-side
+   approvals immutable at the service layer (scenario apply included); F09 actor recorded
+   server-side~~ (all done 2026-09-06, package 2); F07 import approvals bound to the
+   revision they approved; F08 scenario apply requires the previewed version. Open
+   question from F04: a substitute-rescued line keeps its partial own-product draw and
+   is charged whole against the substitute (C-17) — ruling needed
 3. Notifications — Teams/mail push (new uncovered wells, pending approvals, approaching
    order deadlines)
 

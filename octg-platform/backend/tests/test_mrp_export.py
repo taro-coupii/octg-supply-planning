@@ -222,7 +222,16 @@ def test_tab1_rows_match_mrp_summary_exactly(db_session):
     for row, rec in zip(rows, ordered):
         assert row[idx["Product ID"]] == rec.product_id
         assert row[idx["Product"]] == (rec.product_description or rec.product_id)
-        assert row[idx["Quantity"]] == pytest.approx(rec.quantity)
+        assert row[idx["Net Shortfall"]] == pytest.approx(rec.quantity)
+        # F04: the breakdown columns reconcile to the net figure, row by row.
+        assert row[idx["Demand"]] == pytest.approx(rec.demand_quantity)
+        assert row[idx["Drawn Company"]] == pytest.approx(rec.drawn_company)
+        assert (
+            row[idx["Demand"]]
+            - row[idx["Drawn Customer-owned"]]
+            - row[idx["Drawn Company"]]
+            - row[idx["Drawn Substitute"]]
+        ) == pytest.approx(rec.quantity)
         assert row[idx["Unit"]] == rec.unit_of_measure.value
         assert _as_date(row[idx["ROS Date"]]) == rec.ros_date.date()
         assert _as_date(row[idx["Required Ship Date"]]) == rec.required_ship_date

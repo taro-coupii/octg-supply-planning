@@ -193,11 +193,26 @@ class DemandImportRow(Base):
     override_approved = Column(Boolean, nullable=False, default=False)
     override_approved_at = Column(DateTime, nullable=True)
     override_approved_by = Column(String, nullable=True)
+    #: WHO ACTUALLY APPROVED: the authenticated user, set by the server (F09).
+    #: `override_approved_by` above is free "on behalf of" text.
+    # No FOREIGN KEY on purpose: this is the RECORD of who acted, and it must
+    # survive that user later being removed. Resolved view-only.
+    override_approved_by_user_id = Column(String(36), nullable=True)
 
     applied = Column(Boolean, nullable=False, default=False)
     applied_demand_line_id = Column(
         String(36), ForeignKey("demand_lines.id"), nullable=True
     )
+    override_approved_by_user = relationship(
+        "User",
+        primaryjoin="foreign(DemandImportRow.override_approved_by_user_id) == User.id",
+        viewonly=True,
+    )
+
+    @property
+    def override_approved_by_user_name(self) -> str | None:
+        u = self.override_approved_by_user
+        return u.display_name if u else None
     apply_error = Column(String, nullable=True)
 
     batch = relationship("DemandImportBatch", back_populates="rows")

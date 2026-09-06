@@ -319,6 +319,11 @@ class SubstitutionApprovalOut(BaseModel):
     status: SubstitutionApprovalStatus
     requested_at: datetime
     decided_at: datetime | None
+    #: Server-recorded actors (F09); never settable from a request body.
+    requested_by_user_id: str | None = None
+    requested_by_user_name: str | None = None
+    decided_by_user_id: str | None = None
+    decided_by_user_name: str | None = None
 
     class Config:
         from_attributes = True
@@ -468,6 +473,14 @@ class MrpRecommendationOut(BaseModel):
     reason: str
     demand_line_ids: list[str] = []
     lead_time: LeadTimeBreakdownOut | None = None
+    #: The breakdown behind `quantity` (F04): demand less the three draws is the
+    #: net shortfall. `whole_line_ids` are lines counted at their whole quantity
+    #: because their verdict carries no net figures yet.
+    demand_quantity: float = 0.0
+    drawn_customer_owned: float = 0.0
+    drawn_company: float = 0.0
+    drawn_substitute: float = 0.0
+    whole_line_ids: list[str] = []
 
     class Config:
         from_attributes = True
@@ -1550,9 +1563,12 @@ class DemandImportRowOut(BaseModel):
     # ---- The override APPROVAL: a second, explicit decision ---------------
     override_approved: bool = False
     override_approved_at: datetime | None = None
-    #: ATTRIBUTION ONLY. No code branches on it -- see
+    #: "On behalf of" text as typed by the caller. No code branches on it -- see
     #: `app.models.demand_import.DemandImportRow.override_approved_by`.
     override_approved_by: str | None = None
+    #: Who actually approved: the authenticated user, recorded by the server (F09).
+    override_approved_by_user_id: str | None = None
+    override_approved_by_user_name: str | None = None
 
     # ---- The BASELINE: what was live when this row was staged -------------
     #
@@ -1859,7 +1875,11 @@ class ScenarioSummaryOut(BaseModel):
     customer_id: str
     customer_name: str
     status: ScenarioStatus
+    #: "On behalf of" text typed at creation. The actor is `created_by_user_*`,
+    #: recorded server-side from the authenticated user (F09).
     created_by: str | None
+    created_by_user_id: str | None = None
+    created_by_user_name: str | None = None
     created_at: datetime
     updated_at: datetime | None
     applied_at: datetime | None
@@ -3291,6 +3311,7 @@ class CustomerConfigChangeOut(BaseModel):
     well_changes: list[WellCoverageRollupChangeOut] = []
     #: 1 for any real change including a combined one; 0 for a no-op.
     recomputes_performed: int = 0
+    neighbour_recompute_failures: list[str] = []
 
     coverage_resolvable_before: bool = True
     #: The engine's own message when coverage still cannot be resolved. See docstring.
@@ -3432,6 +3453,8 @@ class ApprovalQueueRowOut(BaseModel):
     status: str
     requested_at: datetime
     decided_at: datetime | None = None
+    #: Server-recorded decider (F09); None for rows decided before it existed.
+    decided_by_user_name: str | None = None
     well_id: str | None = None
     well_name: str | None = None
     customer_name: str | None = None

@@ -252,13 +252,29 @@ class Scenario(Base):
     status = Column(
         SAEnum(ScenarioStatus), nullable=False, default=ScenarioStatus.DRAFT
     )
-    # Attribution only. NOT an access-control field -- scenarios are shared.
+    # "On behalf of" text, typed by the caller. Attribution only, NOT an
+    # access-control field, and NOT the record of who acted: that is
+    # `created_by_user_id`, which the server fills from the authenticated user
+    # (adversarial review 2026-09-06, F09) and the body cannot set.
     created_by = Column(String, nullable=True)
+    # No FOREIGN KEY on purpose: this is the RECORD of who acted, and it must
+    # survive that user later being removed. Resolved view-only.
+    created_by_user_id = Column(String(36), nullable=True)
     created_at = Column(DateTime, nullable=False, server_default=func.now())
     updated_at = Column(DateTime, nullable=True)
     # Set exactly once, by app.engines.scenario.apply_to_base_plan. Its presence
     # is what makes the scenario an immutable historical record.
     applied_at = Column(DateTime, nullable=True)
+
+    created_by_user = relationship(
+        "User",
+        primaryjoin="foreign(Scenario.created_by_user_id) == User.id",
+        viewonly=True,
+    )
+
+    @property
+    def created_by_user_name(self) -> str | None:
+        return self.created_by_user.display_name if self.created_by_user else None
 
     customer = relationship("Customer")
     overrides = relationship(

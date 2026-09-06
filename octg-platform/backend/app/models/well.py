@@ -35,10 +35,10 @@ class Well(Base):
     --------------------------------------------------
     The product owner's correction, verbatim:
 
-        Status essentially never varies between the demand lines of a single
-        well. If the well is confirmed, every line belonging to it is confirmed.
-        Demand of both the primary and the contingency profile coexisting inside
-        a confirmed well, on the other hand, is an everyday occurrence.
+        Status basically never differs between the demand lines inside one
+        well. If a well is confirmed, every line belonging to that well is
+        confirmed. It is routine, though, for a confirmed well to hold demand
+        of different profiles -- primary and contingency.
 
     Status does not vary within a well: confirming a well confirms every line of
     it. It was previously a column on `DemandLine`, which made "one well at two

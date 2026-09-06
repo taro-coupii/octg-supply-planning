@@ -53,7 +53,11 @@ from app.engines.scenario import (
     assert_mutable,
     preview,
 )
-from app.engines.substitution import decide_approval, request_approval
+from app.engines.substitution import (
+    decide_approval,
+    effective_approval,
+    request_approval,
+)
 from app.models import (
     DemandStatus,
     ScenarioStatus,
@@ -95,13 +99,16 @@ class ApplyResult:
     notes: tuple[str, ...] = ()
 
 
-def apply_to_base_plan(db: Session, scenario) -> ApplyResult:
+def apply_to_base_plan(
+    db: Session, scenario, *, actor_user_id: str | None = None
+) -> ApplyResult:
     """Write `scenario`'s overrides into production data and recompute coverage.
 
     Guarded, in this order:
 
       1. `assert_mutable` -- an APPLIED scenario is immutable and terminal.
-      2. `apply_blockers` -- refuses SUPPLY overrides. See below.
+      2. `apply_blockers` -- refuses SUPPLY overrides (see below) and any
+         approval override that would rewrite a DECIDED approval (F06).
 
     Supply overrides and the Oracle system boundary
     ----------------------------------------------
@@ -130,6 +137,9 @@ def apply_to_base_plan(db: Session, scenario) -> ApplyResult:
     The refusal is ALL-OR-NOTHING. Applying the demand half of an agreed scenario
     and dropping the supply half would leave the base plan in a state nobody
     agreed to, and the scenario marked Applied as though it had all landed.
+
+    `actor_user_id` is the authenticated user applying the scenario (F09); it is
+    recorded on every approval this apply raises or decides.
 
     Returns an `ApplyResult`; raises before writing anything if either guard trips.
     """
@@ -177,42 +187,51 @@ def apply_to_base_plan(db: Session, scenario) -> ApplyResult:
         # line's own product, so that is the only value it could take.
         from_product_id = override.target_from_product_id or line.product_id
 
-        approval = (
-            db.query(WellSubstitutionApproval)
-            .filter(
-                WellSubstitutionApproval.demand_line_id == line.id,
-                WellSubstitutionApproval.from_product_id == from_product_id,
-                WellSubstitutionApproval.to_product_id == override.target_to_product_id,
-            )
-            .order_by(WellSubstitutionApproval.requested_at.desc())
-            .first()
+        # The row the VERDICT reads (newest, but Approved wins), not merely the
+        # newest row -- so this writes against the same row coverage looks at.
+        approval = effective_approval(
+            db, line.id, from_product_id, override.target_to_product_id
         )
-        if approval is None:
+        if approval is not None and approval.status != SubstitutionApprovalStatus.PENDING:
+            # A decided approval is FINAL (F06). `apply_blockers` above already
+            # refused the two rewrites (re-open to Pending, Reject an Approved),
+            # so what is left is a restatement (no-op) or Approving a Rejected
+            # pair, which is a NEW superseding request rather than an edit.
+            if target == approval.status:
+                notes.append(
+                    f"Substitution approval {approval.id} was already "
+                    f"{approval.status.value}; the scenario restates it, nothing "
+                    "was changed."
+                )
+                continue
+            approval = request_approval(
+                db, line, from_product_id, override.target_to_product_id,
+                actor_user_id=actor_user_id,
+            )
+            notes.append(
+                f"Substitution approval {approval.id} supersedes an earlier "
+                "Rejected decision; the earlier row is kept as history."
+            )
+        elif approval is None:
             # The common case: the planner asked "what if this were approved?"
             # about a pair nobody had even requested. Applying the agreement means
             # the request now exists AND has been decided, so create the request
             # through the normal engine rather than fabricating a row.
             approval = request_approval(
-                db, line, from_product_id, override.target_to_product_id
+                db, line, from_product_id, override.target_to_product_id,
+                actor_user_id=actor_user_id,
             )
 
         if target == SubstitutionApprovalStatus.PENDING:
-            # Re-opening a settled approval. Legitimate ("we are no longer sure
-            # the customer agreed") but it discards a decision, so it is recorded
-            # in the notes rather than done quietly.
-            if approval.status != SubstitutionApprovalStatus.PENDING:
-                notes.append(
-                    f"Substitution approval {approval.id} was reopened from "
-                    f"{approval.status.value} to Pending by this scenario."
-                )
-            approval.status = SubstitutionApprovalStatus.PENDING
-            approval.decided_at = None
+            # Only reachable for a row that IS pending (or was just created):
+            # nothing to decide, and re-opening a decided row was refused above.
             db.flush()
         else:
             decide_approval(
                 db,
                 approval.id,
                 approved=(target == SubstitutionApprovalStatus.APPROVED),
+                actor_user_id=actor_user_id,
             )
         decided.append(approval.id)
 

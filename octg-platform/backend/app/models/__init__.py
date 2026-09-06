@@ -12,6 +12,7 @@ from .customer_owned_inventory import (
     CustomerOwnedInventoryUpload,
 )
 from .company_inventory_upload import CompanyInventoryUpload
+from .inventory_edit import CompanyInventoryEdit
 from .lead_time import ANY_ATTRIBUTE_VALUE, LeadTimeComponent, LeadTimeDimension
 from .demand import DemandLine, DemandRevision, DemandStatus, DemandProfile
 from .coverage import CoverageResult, CoverageStatus, ImpactRecord

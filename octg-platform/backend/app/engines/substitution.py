@@ -20,7 +20,7 @@ they are reported separately because they have different recommended actions:
     Oracle facts. So the substitute is still OFFERED as a candidate (hiding it
     would deny the planner a real option) but it can never become
     COVERED_VIA_SUBSTITUTE. The action names the Oracle step:
-    the user must go into Oracle themselves and release the hard assignment.
+    "the user must go into Oracle themselves and release the hard assignment".
 
 `blocking_layer` is ONE value, so the layers -- though conceptually independent
 -- are reported in a fixed PRIORITY order (see `find_candidates`). That tension
@@ -528,8 +528,13 @@ def request_approval(
     demand_line: DemandLine,
     from_product_id: str,
     to_product_id: str,
+    *,
+    actor_user_id: str | None = None,
 ) -> WellSubstitutionApproval:
     """Create (or return the existing open) well-layer approval request.
+
+    `actor_user_id` is the AUTHENTICATED user (F09), recorded on a newly created
+    row only -- returning an existing row does not re-attribute it.
 
     Requesting is allowed even when the technical/customer layers do not clear
     -- the layers are independent, and the request record is what the approver
@@ -559,20 +564,82 @@ def request_approval(
         to_product_id=to_product_id,
         status=SubstitutionApprovalStatus.PENDING,
         requested_at=datetime.utcnow(),
+        requested_by_user_id=actor_user_id,
     )
     db.add(approval)
     db.flush()
     return approval
 
 
-def decide_approval(db: Session, approval_id: str, approved: bool) -> WellSubstitutionApproval:
-    """Approve or reject a well-layer approval request."""
+class ApprovalAlreadyDecided(ValueError):
+    """A decided well-layer approval was asked to change.
+
+    A decision is FINAL (product-owner ruling 2026-08-12, made a service-layer rule
+    by adversarial review 2026-09-06, F06): coverage has been recomputed on top of
+    the verdict, so re-deciding -- or quietly re-opening -- would rewrite history
+    under every figure that read it. The rule lives HERE, in the one function that
+    writes `status`/`decided_at`, so that no caller (the API, scenario apply, a
+    future import) can bypass it. Reversal is a NEW approval request for the same
+    pair; `effective_approval` says which row then counts.
+    """
+
+
+def effective_approval(
+    db: Session, demand_line_id: str, from_product_id: str, to_product_id: str
+) -> WellSubstitutionApproval | None:
+    """The one approval row that governs a (line, from, to) pair.
+
+    Newest first, but an APPROVED row always wins over a later Pending or Rejected
+    re-request, so a re-request can never silently un-cover a line. This is the
+    same rule `find_candidates` applies when it reads the well layer; it is exposed
+    so writers (scenario apply) look at the same row the verdict does.
+    """
+    rows = (
+        db.query(WellSubstitutionApproval)
+        .filter(
+            WellSubstitutionApproval.demand_line_id == demand_line_id,
+            WellSubstitutionApproval.from_product_id == from_product_id,
+            WellSubstitutionApproval.to_product_id == to_product_id,
+        )
+        .order_by(WellSubstitutionApproval.requested_at.desc())
+        .all()
+    )
+    held: WellSubstitutionApproval | None = None
+    for a in rows:
+        if held is None or (
+            held.status != SubstitutionApprovalStatus.APPROVED
+            and a.status == SubstitutionApprovalStatus.APPROVED
+        ):
+            held = a
+    return held
+
+
+def decide_approval(
+    db: Session,
+    approval_id: str,
+    approved: bool,
+    *,
+    actor_user_id: str | None = None,
+) -> WellSubstitutionApproval:
+    """Approve or reject a PENDING well-layer approval request.
+
+    Raises `ApprovalAlreadyDecided` for a row that is no longer Pending: a decision
+    is final and this is the only writer of `status`/`decided_at`, so the rule
+    cannot be side-stepped by calling the engine directly.
+    """
     approval = db.get(WellSubstitutionApproval, approval_id)
     if approval is None:
         raise ValueError(f"WellSubstitutionApproval {approval_id} not found")
+    if approval.status != SubstitutionApprovalStatus.PENDING:
+        raise ApprovalAlreadyDecided(
+            f"This approval was already decided ({approval.status.value}). "
+            "A decision is final; to reverse it, raise a new approval request "
+            "for the same demand line."
+        )
     approval.status = (
         SubstitutionApprovalStatus.APPROVED if approved else SubstitutionApprovalStatus.REJECTED
     )
     approval.decided_at = datetime.utcnow()
+    approval.decided_by_user_id = actor_user_id
     db.flush()
     return approval

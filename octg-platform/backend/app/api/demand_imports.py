@@ -27,6 +27,7 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile
 from sqlalchemy.orm import Session, joinedload
 
+from app.auth.deps import get_current_user
 from app.db import get_db
 from app.engines.demand_import import (
     OPTIONAL_COLUMNS,
@@ -44,6 +45,7 @@ from app.engines.demand_import_preview import (
 )
 from app.auth.scope import bus_of_import_batch, planner_bu
 from app.models import (
+    User,
     Customer,
     DemandImportBatch,
     DemandImportBatchStatus,
@@ -135,6 +137,8 @@ def _row_out(db: Session, row: DemandImportRow) -> DemandImportRowOut:
         override_approved=row.override_approved,
         override_approved_at=row.override_approved_at,
         override_approved_by=row.override_approved_by,
+        override_approved_by_user_id=row.override_approved_by_user_id,
+        override_approved_by_user_name=row.override_approved_by_user_name,
         baseline_revision_no=row.baseline_revision_no,
         baseline_quantity=row.baseline_quantity,
         baseline_ros_date=row.baseline_ros_date,
@@ -497,6 +501,7 @@ def set_row_override_approval(
     row_id: str,
     body: DemandImportOverrideApprovalIn,
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     """Approve -- or withdraw approval for -- overriding one row's conflict.
 
@@ -539,12 +544,14 @@ def set_row_override_approval(
     if body.approved:
         row.override_approved_at = datetime.utcnow()
         row.override_approved_by = (body.approved_by or "").strip() or None
+        row.override_approved_by_user_id = user.id
     else:
         # Cleared, not kept. A withdrawn approval that retained its timestamp and
         # attributor would read as an approval that had happened, which is the one
         # thing this row must not claim.
         row.override_approved_at = None
         row.override_approved_by = None
+        row.override_approved_by_user_id = None
     db.commit()
     db.refresh(row)
     return _row_out(db, row)

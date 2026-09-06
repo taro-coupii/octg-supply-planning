@@ -666,7 +666,8 @@ def test_preview_reports_an_mrp_row_being_removed(db_session):
     impact = preview(db_session, scenario)
     (row,) = impact.mrp_changes
     assert row.kind == "removed"
-    assert row.quantity_before == 4000
+    # 4000 demanded, 1000 drawn from the pool: the NET shortfall (F04) is 3000.
+    assert row.quantity_before == 3000
     assert row.quantity_after is None
 
 

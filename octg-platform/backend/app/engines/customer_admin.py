@@ -249,6 +249,11 @@ class CustomerConfigChange:
     #: written and nothing was recomputed.
     unchanged: bool = False
 
+    #: Neighbours in the old and new Business Units whose own recompute failed
+    #: (their stored verdicts were left untouched inside their savepoint). Named
+    #: rather than swallowed -- a customer that could not be re-judged after the
+    #: pool changed around it is exactly the one whose green cannot be trusted.
+    neighbour_recompute_failures: tuple[str, ...] = ()
 
 def customer_wells(db: Session, customer: Customer) -> list[Well]:
     """Every well under `customer` -- the whole inventory pool scope.
@@ -518,6 +523,33 @@ def apply_customer_config_change(
 
     db.flush()
 
+    # F05 (review 2026-09-06), the remap half: a Business Unit move changes the
+    # pool for EVERYONE in both units. The moved customer's hard assignments now
+    # deduct from the destination pool and stop deducting from the origin pool,
+    # so every neighbour's stored verdict is stale the moment this flush lands.
+    # Recompute each neighbour in its own savepoint; count successes, name
+    # failures. The moved customer itself was recomputed above.
+    neighbours_recomputed = 0
+    neighbour_failures: list[str] = []
+    if bu_changed:
+        neighbour_bus = [b for b in (bu_before, bu_after) if b is not None]
+        neighbours = (
+            db.query(Customer)
+            .filter(Customer.business_unit_id.in_(neighbour_bus), Customer.id != customer.id)
+            .order_by(Customer.name)
+            .all()
+            if neighbour_bus
+            else []
+        )
+        for neighbour in neighbours:
+            try:
+                with db.begin_nested():
+                    recompute_customer(db, neighbour)
+                neighbours_recomputed += 1
+            except (InventoryRowMissing, InventoryScopeMissing) as exc:
+                neighbour_failures.append(f"{neighbour.name}: {exc}")
+        db.flush()
+
     well_changes: list[WellCoverageChange] = []
     for well in customer_wells(db, customer):
         name, was = coverage_before.get(well.id, (well.name, None))
@@ -546,7 +578,8 @@ def apply_customer_config_change(
         wells_examined=len(wells),
         well_changes=tuple(well_changes),
         # ONE pass, whether one field moved or both. See the module docstring.
-        recomputes_performed=1,
+        recomputes_performed=1 + neighbours_recomputed,
+        neighbour_recompute_failures=tuple(neighbour_failures),
         coverage_resolvable_before=resolvable_before,
         unresolved_reason=unresolved_reason,
     )

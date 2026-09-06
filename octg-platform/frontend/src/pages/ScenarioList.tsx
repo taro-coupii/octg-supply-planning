@@ -255,7 +255,8 @@ export default function ScenarioList() {
                   {s.override_count} override{s.override_count === 1 ? "" : "s"}
                 </span>
                 <span>created {formatWhen(s.created_at)}</span>
-                {s.created_by && <span>by {s.created_by}</span>}
+                {s.created_by_user_name && <span>by {s.created_by_user_name}</span>}
+                {s.created_by && <span>on behalf of {s.created_by}</span>}
                 {s.applied_at && <span>applied {formatWhen(s.applied_at)}</span>}
               </div>
               {s.description && <div className="scenario-desc">{s.description}</div>}

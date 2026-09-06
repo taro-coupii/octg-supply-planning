@@ -523,6 +523,22 @@ class LineCoverage:
     product_id: str
     quantity: float
     ros_date: datetime
+    #: THE NET POSITION of this line (adversarial review 2026-09-06, F04).
+    #:
+    #: `quantity` is what the line demands; the three `drawn_*` figures are what
+    #: the pass actually took for it, out of the SAME AllocationOutcome / substitute
+    #: draw that produced `status`; `residual` is what nobody has steel for. A
+    #: partially drawn Uncovered line has residual < quantity, and that residual
+    #: -- not the whole line -- is what a mill order has to cover. MRP reads it;
+    #: before this it re-ordered the whole line and double-counted the draw.
+    #:
+    #: `drawn_company` is pool + own assignment together: both are company steel.
+    #: `drawn_substitute` is the whole line for CoveredViaSubstitute, which is
+    #: exactly what the fall-through charges to the substitute's stock.
+    drawn_customer_owned: float = 0.0
+    drawn_company: float = 0.0
+    drawn_substitute: float = 0.0
+    residual: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -924,7 +940,7 @@ def compute_customer_coverage(
             # lines could not both be promised one quantity. The product owner has
             # REVERSED that: reserving is itself the platform creating a hard
             # reservation, and it must never do that --
-            # "hard assignment cannot be made on the OCTG Platform; on the OCTG
+            # "Hard allocation cannot be done on the OCTG Platform. On the OCTG
             # Platform everything is strictly soft."
             #
             # The bug that reservation was fixing is real, so it is not simply
@@ -1066,8 +1082,24 @@ def compute_customer_coverage(
                 f"{reason_by_line[pending_line.id]}; {note}"
             )
 
-    by_line = {
-        view.id: LineCoverage(
+    def _net(view: LineView) -> tuple[float, float, float, float]:
+        """(customer-owned, company, substitute, residual) for one line -- from
+        the draws this pass recorded, never re-derived. See `LineCoverage`."""
+        status = status_by_line[view.id]
+        owned = drawn_from_customer_owned.get(view.id, 0.0)
+        company = drawn_from_pool.get(view.id, 0.0) + drawn_from_assignment.get(
+            view.id, 0.0
+        )
+        if status == CoverageStatus.COVERED_VIA_SUBSTITUTE:
+            return owned, company, view.quantity, 0.0
+        if status == CoverageStatus.COVERED:
+            return owned, company, 0.0, 0.0
+        return owned, company, 0.0, max(0.0, view.quantity - owned - company)
+
+    by_line = {}
+    for view in included:
+        owned, company, substitute, residual = _net(view)
+        by_line[view.id] = LineCoverage(
             demand_line_id=view.id,
             well_id=view.well_id,
             status=status_by_line[view.id],
@@ -1076,9 +1108,11 @@ def compute_customer_coverage(
             product_id=view.product_id,
             quantity=view.quantity,
             ros_date=view.ros_date,
+            drawn_customer_owned=owned,
+            drawn_company=company,
+            drawn_substitute=substitute,
+            residual=residual,
         )
-        for view in included
-    }
 
     # Rollup rule: a well is Covered only if EVERY included line is Covered or
     # CoveredViaSubstitute. PendingApproval, Uncovered and Unrecoverable all mean
@@ -1224,12 +1258,22 @@ def recompute_customer(
                     status=verdict.status,
                     reason=verdict.reason,
                     fulfilled_by_product_id=verdict.fulfilled_by_product_id,
+                    demand_quantity=verdict.quantity,
+                    drawn_customer_owned=verdict.drawn_customer_owned,
+                    drawn_company=verdict.drawn_company,
+                    drawn_substitute=verdict.drawn_substitute,
+                    residual=verdict.residual,
                 )
             )
         else:
             existing.status = verdict.status
             existing.reason = verdict.reason
             existing.fulfilled_by_product_id = verdict.fulfilled_by_product_id
+            existing.demand_quantity = verdict.quantity
+            existing.drawn_customer_owned = verdict.drawn_customer_owned
+            existing.drawn_company = verdict.drawn_company
+            existing.drawn_substitute = verdict.drawn_substitute
+            existing.residual = verdict.residual
             # Explicit, not onupdate: a re-verified verdict whose VALUE did not
             # change was still computed now, and an unchanged row is not dirty,
             # so onupdate would keep serving the first-ever stamp (the C-08

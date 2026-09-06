@@ -77,7 +77,7 @@ apply are comparing like with like.
 from dataclasses import dataclass, field
 from datetime import date, datetime
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, object_session
 
 from app.engines.coverage import (
     CustomerCoverage,
@@ -85,6 +85,7 @@ from app.engines.coverage import (
 )
 from app.engines.executive import quantity_by_unit
 from app.engines.mrp import (
+    LineNet,
     UNRESOLVED_STATUSES,
     on_order_runout,
     recommendations_for_lines,
@@ -100,6 +101,7 @@ from app.models import (
     Product,
     ScenarioStatus,
     ScenarioTargetKind,
+    SubstitutionApprovalStatus,
     Well,
 )
 
@@ -457,6 +459,55 @@ def assert_target_in_scope(db: Session, scenario, override) -> None:
         )
 
 
+def approval_blockers(scenario) -> list[str]:
+    """Approval overrides that would have to REWRITE a decided approval.
+
+    A decided well-layer approval is final (F06): `decide_approval` refuses to
+    touch it, and this names the offending override up front so the preview shows
+    the refusal instead of the apply discovering it. Allowed on a decided pair:
+    restating the same verdict (a no-op) and Approving a Rejected pair (a new,
+    superseding request -- the resolution rule lets a newer Approved win). Refused:
+    re-opening to Pending, and Rejecting an Approved pair (an Approved row wins
+    over any later re-request, so a new Rejected row would change nothing; the
+    honest answer is that the approval cannot be reversed from here).
+
+    Previewing such a scenario stays allowed -- "what if we had not approved?" is a
+    fair question -- only applying it is not.
+    """
+    from app.engines.substitution import effective_approval
+
+    db = object_session(scenario)
+    if db is None:
+        return []
+    out: list[str] = []
+    for o in scenario.overrides:
+        if o.target_kind != ScenarioTargetKind.SUBSTITUTION_APPROVAL:
+            continue
+        line = o.target_demand_line
+        if line is None:
+            continue
+        target = SubstitutionApprovalStatus(o.value_text)
+        current = effective_approval(
+            db, line.id, o.target_from_product_id or line.product_id, o.target_to_product_id
+        )
+        if current is None or current.status == SubstitutionApprovalStatus.PENDING:
+            continue
+        if target == current.status:
+            continue
+        if (
+            current.status == SubstitutionApprovalStatus.REJECTED
+            and target == SubstitutionApprovalStatus.APPROVED
+        ):
+            continue
+        out.append(
+            f"Substitution approval {current.id} for demand line {line.id} was "
+            f"already decided ({current.status.value}) and cannot be set to "
+            f"{target.value}: a decision is final. To reverse it, raise a new "
+            "approval request for the same demand line."
+        )
+    return out
+
+
 def apply_blockers(scenario) -> tuple[str, ...]:
     """Why `apply_to_base_plan` would refuse this scenario. Empty means it would
     proceed.
@@ -472,6 +523,8 @@ def apply_blockers(scenario) -> tuple[str, ...]:
             "This scenario has already been applied. An applied scenario is an "
             "immutable record and cannot be applied again."
         )
+
+    blockers.extend(approval_blockers(scenario))
 
     supply = [o for o in scenario.overrides if o.target_kind in SUPPLY_KINDS]
     if supply:
@@ -756,6 +809,20 @@ def _unresolved_views(computed: CustomerCoverage) -> list:
     ]
 
 
+def _net_by_line(computed: CustomerCoverage) -> dict[str, LineNet]:
+    """The pass's own per-line net position, in MRP's shape (F04)."""
+    return {
+        line_id: LineNet(
+            demand=v.quantity,
+            customer_owned=v.drawn_customer_owned,
+            company=v.drawn_company,
+            substitute=v.drawn_substitute,
+            residual=v.residual,
+        )
+        for line_id, v in computed.by_line.items()
+    }
+
+
 def _mrp_changes(
     db: Session,
     base: CustomerCoverage,
@@ -773,11 +840,15 @@ def _mrp_changes(
     """
     before_rows = {
         (r.product_id, r.unrecoverable): r
-        for r in recommendations_for_lines(db, _unresolved_views(base), today=today)
+        for r in recommendations_for_lines(
+            db, _unresolved_views(base), today=today, net_by_line=_net_by_line(base)
+        )
     }
     after_rows = {
         (r.product_id, r.unrecoverable): r
-        for r in recommendations_for_lines(db, _unresolved_views(after), today=today)
+        for r in recommendations_for_lines(
+            db, _unresolved_views(after), today=today, net_by_line=_net_by_line(after)
+        )
     }
 
     out: list[MrpRowChange] = []

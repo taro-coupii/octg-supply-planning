@@ -117,6 +117,7 @@ ambiguity.
 
 from __future__ import annotations
 
+import json
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -129,6 +130,7 @@ from app.engines.inventory import InventoryRowMissing, InventoryScopeMissing
 from app.quantities import InvalidQuantity, parse_quantity_cell, validate_quantity
 from app.models import (
     BusinessUnit,
+    CompanyInventoryEdit,
     CompanyInventoryUpload,
     Customer,
     DemandLine,
@@ -613,6 +615,30 @@ class WriteResult:
 
 
 
+def _log_edit(
+    db: Session,
+    row_kind: str,
+    row_id: str,
+    action: str,
+    before: dict,
+    after: dict | None,
+    actor_user_id: str | None,
+) -> None:
+    """Append the who/what/when of one inline write (F09). See
+    `app.models.inventory_edit`."""
+    db.add(
+        CompanyInventoryEdit(
+            row_kind=row_kind,
+            row_id=row_id,
+            action=action,
+            before_json=json.dumps(before, default=str) if before else None,
+            after_json=json.dumps(after, default=str) if after is not None else None,
+            user_id=actor_user_id,
+        )
+    )
+    db.flush()
+
+
 def _check_stock_quantity(db: Session, product_id: str, quantity: float, label: str) -> float:
     """One rule for every stock figure a writer accepts (app.quantities).
 
@@ -627,7 +653,9 @@ def _check_stock_quantity(db: Session, product_id: str, quantity: float, label: 
 
 
 def set_on_hand(
-    db: Session, row_id: str, quantity: float
+    db: Session, row_id: str, quantity: float,
+    *,
+    actor_user_id: str | None = None,
 ) -> WriteResult:
     """Set the quantity of an existing `InventoryOnHand` row. Refuses a
     non-maintainable row with `NotMaintainable` (-> 403 at the API layer).
@@ -652,12 +680,15 @@ def set_on_hand(
         "source_system": row.source_system,
         "synced_at": row.synced_at,
     }
+    _log_edit(db, "InventoryOnHand", row.id, "set", before, after, actor_user_id)
     report = _recompute_business_unit(db, row.business_unit_id)
     return WriteResult(row_id=row.id, before=before, after=after, recompute=report)
 
 
 def create_on_hand(
-    db: Session, business_unit_id: str, product_id: str, quantity: float
+    db: Session, business_unit_id: str, product_id: str, quantity: float,
+    *,
+    actor_user_id: str | None = None,
 ) -> WriteResult:
     """Create an `InventoryOnHand` row where none exists. A row already existing
     for (business_unit_id, product_id) is a caller error -- use `set_on_hand`.
@@ -690,11 +721,12 @@ def create_on_hand(
         "source_system": row.source_system,
         "synced_at": row.synced_at,
     }
+    _log_edit(db, "InventoryOnHand", row.id, "create", {}, after, actor_user_id)
     report = _recompute_business_unit(db, business_unit_id)
     return WriteResult(row_id=row.id, before={}, after=after, recompute=report)
 
 
-def delete_on_hand(db: Session, row_id: str) -> WriteResult:
+def delete_on_hand(db: Session, row_id: str, *, actor_user_id: str | None = None) -> WriteResult:
     row = db.get(InventoryOnHand, row_id)
     if row is None:
         raise LookupError(f"No InventoryOnHand row {row_id}")
@@ -707,6 +739,7 @@ def delete_on_hand(db: Session, row_id: str) -> WriteResult:
     business_unit_id = row.business_unit_id
     db.delete(row)
     db.flush()
+    _log_edit(db, "InventoryOnHand", row_id, "delete", before, None, actor_user_id)
     report = _recompute_business_unit(db, business_unit_id)
     return WriteResult(row_id=row_id, before=before, after=None, recompute=report)
 
@@ -716,6 +749,8 @@ def set_on_order(
     row_id: str,
     quantity: float,
     expected_arrival_date: datetime | None = None,
+    *,
+    actor_user_id: str | None = None,
 ) -> WriteResult:
     row = db.get(InventoryOnOrder, row_id)
     if row is None:
@@ -745,6 +780,7 @@ def set_on_order(
     # recompute to change -- but the report shape is still returned, empty, so a
     # caller does not need a different response shape for a channel that happens
     # not to move anything.
+    _log_edit(db, "InventoryOnOrder", row.id, "set", before, after, actor_user_id)
     report = RecomputeReport(recomputed_customer_ids=(), well_changes={})
     return WriteResult(row_id=row.id, before=before, after=after, recompute=report)
 
@@ -755,6 +791,8 @@ def create_on_order(
     product_id: str,
     quantity: float,
     expected_arrival_date: datetime | None = None,
+    *,
+    actor_user_id: str | None = None,
 ) -> WriteResult:
     quantity = _check_stock_quantity(db, product_id, quantity, "on-order quantity")
     row = InventoryOnOrder(
@@ -773,11 +811,12 @@ def create_on_order(
         "source_system": row.source_system,
         "synced_at": row.synced_at,
     }
+    _log_edit(db, "InventoryOnOrder", row.id, "create", {}, after, actor_user_id)
     report = RecomputeReport(recomputed_customer_ids=(), well_changes={})
     return WriteResult(row_id=row.id, before={}, after=after, recompute=report)
 
 
-def delete_on_order(db: Session, row_id: str) -> WriteResult:
+def delete_on_order(db: Session, row_id: str, *, actor_user_id: str | None = None) -> WriteResult:
     row = db.get(InventoryOnOrder, row_id)
     if row is None:
         raise LookupError(f"No InventoryOnOrder row {row_id}")
@@ -790,8 +829,31 @@ def delete_on_order(db: Session, row_id: str) -> WriteResult:
     }
     db.delete(row)
     db.flush()
+    _log_edit(db, "InventoryOnOrder", row_id, "delete", before, None, actor_user_id)
     report = RecomputeReport(recomputed_customer_ids=(), well_changes={})
     return WriteResult(row_id=row_id, before=before, after=None, recompute=report)
+
+
+def _recompute_assignment_scope(db: Session, customer: Customer) -> RecomputeReport:
+    """An assignment change is felt by EVERY customer in the Business Unit.
+
+    The three assignment writers used to recompute only the customer the row
+    was assigned to. But coverage deducts OTHER customers' hard assignments
+    from the pool a customer may draw on (`reserved_elsewhere` in
+    app.engines.coverage), so assigning 1,000 to customer B shrinks what A can
+    reach -- and A's stored verdict stayed "Covered" until something unrelated
+    happened to A. Reproduced in the 2026-09-06 review (F05): stock 6,000, A
+    needs 5,500 and reads Covered; assign 1,000 to B; A is still stored Covered
+    while a fresh compute says Uncovered.
+
+    The input's blast radius is the BU, so the recompute's is too. Same
+    per-customer SAVEPOINT isolation and the same failure report as every
+    other BU-wide write. A customer with no BU has no pool and no neighbours,
+    so it alone is recomputed, exactly as before.
+    """
+    if customer.business_unit_id is None:
+        return _recompute_single_customer(db, customer)
+    return _recompute_business_unit(db, customer.business_unit_id)
 
 
 def _assignment_customer(db: Session, demand_line_id: str) -> Customer:
@@ -804,7 +866,7 @@ def _assignment_customer(db: Session, demand_line_id: str) -> Customer:
     return well.planning_node.customer
 
 
-def set_assignment(db: Session, row_id: str, quantity: float) -> WriteResult:
+def set_assignment(db: Session, row_id: str, quantity: float, *, actor_user_id: str | None = None) -> WriteResult:
     row = db.get(InventoryAssignment, row_id)
     if row is None:
         raise LookupError(f"No InventoryAssignment row {row_id}")
@@ -826,12 +888,15 @@ def set_assignment(db: Session, row_id: str, quantity: float) -> WriteResult:
         "source_system": row.source_system,
         "synced_at": row.synced_at,
     }
-    report = _recompute_single_customer(db, customer)
+    _log_edit(db, "InventoryAssignment", row.id, "set", before, after, actor_user_id)
+    report = _recompute_assignment_scope(db, customer)
     return WriteResult(row_id=row.id, before=before, after=after, recompute=report)
 
 
 def create_assignment(
-    db: Session, demand_line_id: str, product_id: str, quantity: float
+    db: Session, demand_line_id: str, product_id: str, quantity: float,
+    *,
+    actor_user_id: str | None = None,
 ) -> WriteResult:
     quantity = _check_stock_quantity(db, product_id, quantity, "assigned quantity")
     customer = _assignment_customer(db, demand_line_id)
@@ -849,11 +914,12 @@ def create_assignment(
         "source_system": row.source_system,
         "synced_at": row.synced_at,
     }
-    report = _recompute_single_customer(db, customer)
+    _log_edit(db, "InventoryAssignment", row.id, "create", {}, after, actor_user_id)
+    report = _recompute_assignment_scope(db, customer)
     return WriteResult(row_id=row.id, before={}, after=after, recompute=report)
 
 
-def delete_assignment(db: Session, row_id: str) -> WriteResult:
+def delete_assignment(db: Session, row_id: str, *, actor_user_id: str | None = None) -> WriteResult:
     row = db.get(InventoryAssignment, row_id)
     if row is None:
         raise LookupError(f"No InventoryAssignment row {row_id}")
@@ -866,7 +932,8 @@ def delete_assignment(db: Session, row_id: str) -> WriteResult:
     customer = _assignment_customer(db, row.demand_line_id)
     db.delete(row)
     db.flush()
-    report = _recompute_single_customer(db, customer)
+    _log_edit(db, "InventoryAssignment", row_id, "delete", before, None, actor_user_id)
+    report = _recompute_assignment_scope(db, customer)
     return WriteResult(row_id=row_id, before=before, after=None, recompute=report)
 
 

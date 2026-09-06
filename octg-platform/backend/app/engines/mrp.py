@@ -144,6 +144,10 @@ class MrpRecommendation:
 
     product_id: str
     product_description: str | None
+    #: THE NET SHORTFALL: what no stock has been drawn for, summed over the lines
+    #: (F04, product-owner ruling 2026-09-06 "net shortfall is the figure, show the
+    #: breakdown"). The four figures below are that breakdown; `demand_quantity`
+    #: minus the three draws is `quantity`, line by line.
     quantity: float
     #: The unit `quantity` is in -- this product's, since a recommendation row is
     #: always one product's demand (the grouping key is (product, recoverability),
@@ -158,6 +162,44 @@ class MrpRecommendation:
     reason: str
     demand_line_ids: list[str] = field(default_factory=list)
     lead_time: LeadTimeBreakdown | None = None
+    demand_quantity: float = 0.0
+    drawn_customer_owned: float = 0.0
+    drawn_company: float = 0.0
+    drawn_substitute: float = 0.0
+    #: Lines whose stored verdict predates the net columns (or was never
+    #: computed): counted at their WHOLE quantity, since nothing is known to have
+    #: been drawn. Named so the reason can say so.
+    whole_line_ids: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class LineNet:
+    """One line's net position as MRP consumes it: demand, the three draws, and
+    the residual a mill order must cover. Built from `CoverageResult` for the
+    stored path and from `app.engines.coverage.LineCoverage` for a preview, so
+    both read the ONE allocation that produced the verdict."""
+
+    demand: float
+    customer_owned: float
+    company: float
+    substitute: float
+    residual: float
+    #: False when the verdict carried no net figures (pre-F04 row or never
+    #: evaluated) and the whole line is being treated as residual.
+    known: bool = True
+
+
+def _stored_net(db: Session, line) -> LineNet:
+    result = db.get(CoverageResult, line.id)
+    if result is None or result.residual is None:
+        return LineNet(line.quantity, 0.0, 0.0, 0.0, line.quantity, known=False)
+    return LineNet(
+        demand=result.demand_quantity if result.demand_quantity is not None else line.quantity,
+        customer_owned=result.drawn_customer_owned or 0.0,
+        company=result.drawn_company or 0.0,
+        substitute=result.drawn_substitute or 0.0,
+        residual=result.residual,
+    )
 
 
 @dataclass
@@ -484,18 +526,31 @@ def _recommendation_for(
     unresolved: list[DemandLine],
     unrecoverable: bool,
     today: date | None = None,
+    net_by_line: dict[str, LineNet] | None = None,
 ) -> MrpRecommendation:
     """Aggregate one product's unresolved demand into a single recommendation.
 
-    Quantity is the sum of the shortfall lines; the driving ROS is the EARLIEST
-    of them, because one order placed for that date also serves the later ones.
+    Quantity is the sum of the lines' NET shortfall -- demand less what coverage
+    already drew for them (F04); the driving ROS is the EARLIEST of them, because
+    one order placed for that date also serves the later ones. `net_by_line`
+    supplies the per-line position for a preview; the stored path reads
+    `CoverageResult`.
 
     `unrecoverable` is passed IN, not recomputed: it is the same live verdict
     that put these lines in the same group, so the row's flag, its reason string
     and its grouping can never disagree with each other.
     """
     today = today or date.today()
-    quantity = sum(line.quantity for line in unresolved)
+    nets = {
+        line.id: (net_by_line[line.id] if net_by_line is not None else _stored_net(db, line))
+        for line in unresolved
+    }
+    quantity = sum(n.residual for n in nets.values())
+    demand_total = sum(n.demand for n in nets.values())
+    drawn_owned = sum(n.customer_owned for n in nets.values())
+    drawn_company = sum(n.company for n in nets.values())
+    drawn_substitute = sum(n.substitute for n in nets.values())
+    whole_line_ids = [lid for lid, n in nets.items() if not n.known]
     driving_line = min(unresolved, key=lambda line: line.ros_date)
     ship_by, order_by, lead_months, breakdown = order_feasibility_with_breakdown(
         db, product, driving_line.ros_date
@@ -509,10 +564,22 @@ def _recommendation_for(
         if unevaluated
         else ""
     )
+    stale = [lid for lid in whole_line_ids if lid not in {l.id for l in unevaluated}]
+    if stale:
+        note += (
+            f"; {len(stale)} of them have a verdict with no net figures "
+            "(computed before the net-shortfall columns) and are counted whole "
+            "-- recompute the owning well(s)"
+        )
+    drawn = drawn_owned + drawn_company + drawn_substitute
+    net_phrase = (
+        f"{quantity:g} net shortfall across {n} demand line(s) "
+        f"({demand_total:g} demanded, {drawn:g} already drawn from stock)"
+    )
 
     if unrecoverable:
         reason = (
-            f"{quantity:g} unresolved across {n} demand line(s); ROS "
+            f"{net_phrase}; ROS "
             f"{driving_line.ros_date.date().isoformat()} is inside the "
             f"{lead_months:g} month lead time -- UNRECOVERABLE by mill order even "
             "if ordered today, escalate (rescope ROS, borrow, or source "
@@ -524,7 +591,7 @@ def _recommendation_for(
         # dimensions -- "configure OD/WT" is actionable, "no lead time" is not.
         missing = ", ".join(breakdown.missing_dimensions) or "any dimension"
         reason = (
-            f"{quantity:g} unresolved across {n} demand line(s); no "
+            f"{net_phrase}; no "
             f"lead-time components configured for {missing} "
             f"(grade_type '{product.grade_type}', OD/WT '{od_wt_key(product)}', "
             f"connection '{product.connection}') -- lead time is NOT MODELLED "
@@ -532,7 +599,7 @@ def _recommendation_for(
         )
     else:
         reason = (
-            f"{quantity:g} unresolved across {n} demand line(s) after "
+            f"{net_phrase} after "
             f"coverage and substitution; order by {order_by.isoformat()} to ship "
             f"{ship_by.isoformat()} ({lead_months:g} month lead time){note}"
         )
@@ -550,6 +617,11 @@ def _recommendation_for(
         reason=reason,
         demand_line_ids=[line.id for line in unresolved],
         lead_time=breakdown,
+        demand_quantity=demand_total,
+        drawn_customer_owned=drawn_owned,
+        drawn_company=drawn_company,
+        drawn_substitute=drawn_substitute,
+        whole_line_ids=whole_line_ids,
     )
 
 
@@ -557,6 +629,7 @@ def _recommendations_for_lines(
     db: Session,
     unresolved: list[DemandLine],
     today: date | None = None,
+    net_by_line: dict[str, LineNet] | None = None,
 ) -> list[MrpRecommendation]:
     """Group unresolved lines into recommendation rows.
 
@@ -587,7 +660,10 @@ def _recommendations_for_lines(
         if product is None:
             continue
         rows.append(
-            _recommendation_for(db, product, lines, unrecoverable=unrec, today=today)
+            _recommendation_for(
+                db, product, lines, unrecoverable=unrec, today=today,
+                net_by_line=net_by_line,
+            )
         )
 
     rows.sort(key=lambda r: (r.recommended_order_date, r.product_id))
@@ -598,6 +674,7 @@ def recommendations_for_lines(
     db: Session,
     unresolved: list[DemandLine],
     today: date | None = None,
+    net_by_line: dict[str, LineNet] | None = None,
 ) -> list[MrpRecommendation]:
     """Public entry to the grouping above, for callers that have already decided
     which lines are unresolved.
@@ -609,9 +686,13 @@ def recommendations_for_lines(
     `id`, `product`, `product_id`, `quantity` and `ros_date` are read.
 
     Reads only. It is the caller's job to have determined unresolvedness by the
-    same definition `_unresolved` uses (UNCOVERED / UNRECOVERABLE / no verdict).
+    same definition `_unresolved` uses (UNCOVERED / UNRECOVERABLE / no verdict),
+    and -- for a hypothetical pass -- to hand the per-line net position in
+    `net_by_line`, since the stored `CoverageResult` does not describe it.
     """
-    return _recommendations_for_lines(db, unresolved, today=today)
+    return _recommendations_for_lines(
+        db, unresolved, today=today, net_by_line=net_by_line
+    )
 
 
 def mrp_summary(

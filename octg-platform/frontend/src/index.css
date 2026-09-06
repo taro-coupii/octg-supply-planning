@@ -351,6 +351,7 @@ tbody tr:last-child td { border-bottom: none; }
 .mrp-section-escalate .mrp-count { background: var(--bad-soft); color: var(--bad); }
 .mrp-table { min-width: 980px; }
 .mrp-reason { font-size: var(--fs-sm); color: var(--text-muted); min-width: 260px; }
+.mrp-draw-breakdown { font-size: var(--fs-caption); color: var(--text-muted); white-space: normal; margin-top: 2px; }
 .date-past { font-size: var(--fs-caption); color: var(--bad); white-space: normal; margin-top: 2px; }
 
 .mrp-block { margin-bottom: var(--space-6); }

@@ -135,7 +135,10 @@ export default function ApprovalQueue() {
                     {r.ros_date ? r.ros_date.slice(0, 10) : "—"}
                   </td>
                   {status !== "Pending" && (
-                    <td className="num">{fmtWhen(r.decided_at)}</td>
+                    <td className="num">
+                      {fmtWhen(r.decided_at)}
+                      {r.decided_by_user_name ? ` · ${r.decided_by_user_name}` : ""}
+                    </td>
                   )}
                   <td>
                     <span className="approval-queue-actions">
@@ -204,7 +207,9 @@ export default function ApprovalQueue() {
                     : "—"}
                   {r.ros_date ? ` · ROS ${r.ros_date.slice(0, 10)}` : ""}
                   {status !== "Pending"
-                    ? ` · decided ${fmtWhen(r.decided_at)}`
+                    ? ` · decided ${fmtWhen(r.decided_at)}${
+                        r.decided_by_user_name ? ` by ${r.decided_by_user_name}` : ""
+                      }`
                     : ""}
                 </span>
               </div>

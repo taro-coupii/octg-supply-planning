@@ -7,9 +7,9 @@ The question this answers, and only this question
 
 The product owner's framing:
 
-    Inventory is separated by Business Unit first -- always. It is separated by
-    customer too as the default, but here we sometimes want to verify it as
-    shared stock across the customer line (the uncovered-demand case).
+    Inventory is split by Business Unit first -- always. It is also split by
+    customer as a rule, but here we sometimes want to examine it as shared
+    inventory across customers (the uncovered-demand case).
 
 So: BU separation is absolute; customer separation is the default; and the ONE
 thing a planner may do across the customer line is *verify* -- for uncovered

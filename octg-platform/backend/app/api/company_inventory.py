@@ -45,6 +45,7 @@ single-row endpoints below.
 from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile
 from sqlalchemy.orm import Session
 
+from app.auth.deps import get_current_user
 from app.db import get_db
 from app.engines.company_inventory import (
     REQUIRED_COLUMNS,
@@ -63,7 +64,7 @@ from app.engines.company_inventory import (
     set_on_hand,
     set_on_order,
 )
-from app.models import BusinessUnit, CompanyInventoryUpload, Product
+from app.models import BusinessUnit, CompanyInventoryUpload, Product, User
 from app.schemas import (
     CompanyAssignmentCreateIn,
     CompanyAssignmentEditIn,
@@ -303,10 +304,12 @@ def list_company_inventory_uploads(business_unit_id: str, db: Session = Depends(
 
 
 @router.patch("/on-hand/{row_id}", response_model=CompanyInventoryWriteOut)
-def edit_on_hand(row_id: str, body: CompanyOnHandEditIn, db: Session = Depends(get_db)):
+def edit_on_hand(row_id: str, body: CompanyOnHandEditIn, db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
     """MVP-COMPROMISE[C-03]: see the module docstring."""
     try:
-        result = set_on_hand(db, row_id, body.quantity)
+        result = set_on_hand(db, row_id, body.quantity, actor_user_id=user.id)
     except NotMaintainable as exc:
         db.rollback()
         raise _handle_not_maintainable(exc)
@@ -319,13 +322,18 @@ def edit_on_hand(row_id: str, body: CompanyOnHandEditIn, db: Session = Depends(g
 
 
 @router.post("/on-hand", response_model=CompanyInventoryWriteOut, status_code=201)
-def add_on_hand(body: CompanyOnHandCreateIn, db: Session = Depends(get_db)):
+def add_on_hand(body: CompanyOnHandCreateIn, db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
     """MVP-COMPROMISE[C-03]: see the module docstring."""
     _business_unit(db, body.business_unit_id)
     if db.get(Product, body.product_id) is None:
         raise HTTPException(status_code=404, detail="Product not found")
     try:
-        result = create_on_hand(db, body.business_unit_id, body.product_id, body.quantity)
+        result = create_on_hand(
+            db, body.business_unit_id, body.product_id, body.quantity,
+            actor_user_id=user.id,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
     db.commit()
@@ -333,10 +341,12 @@ def add_on_hand(body: CompanyOnHandCreateIn, db: Session = Depends(get_db)):
 
 
 @router.delete("/on-hand/{row_id}", response_model=CompanyInventoryWriteOut)
-def remove_on_hand(row_id: str, db: Session = Depends(get_db)):
+def remove_on_hand(row_id: str, db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
     """MVP-COMPROMISE[C-03]: see the module docstring."""
     try:
-        result = delete_on_hand(db, row_id)
+        result = delete_on_hand(db, row_id, actor_user_id=user.id)
     except NotMaintainable as exc:
         db.rollback()
         raise _handle_not_maintainable(exc)
@@ -352,10 +362,15 @@ def remove_on_hand(row_id: str, db: Session = Depends(get_db)):
 
 
 @router.patch("/on-order/{row_id}", response_model=CompanyInventoryWriteOut)
-def edit_on_order(row_id: str, body: CompanyOnOrderEditIn, db: Session = Depends(get_db)):
+def edit_on_order(row_id: str, body: CompanyOnOrderEditIn, db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
     """MVP-COMPROMISE[C-03]: see the module docstring."""
     try:
-        result = set_on_order(db, row_id, body.quantity, body.expected_arrival_date)
+        result = set_on_order(
+            db, row_id, body.quantity, body.expected_arrival_date,
+            actor_user_id=user.id,
+        )
     except NotMaintainable as exc:
         db.rollback()
         raise _handle_not_maintainable(exc)
@@ -368,7 +383,9 @@ def edit_on_order(row_id: str, body: CompanyOnOrderEditIn, db: Session = Depends
 
 
 @router.post("/on-order", response_model=CompanyInventoryWriteOut, status_code=201)
-def add_on_order(body: CompanyOnOrderCreateIn, db: Session = Depends(get_db)):
+def add_on_order(body: CompanyOnOrderCreateIn, db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
     """MVP-COMPROMISE[C-03]: see the module docstring."""
     _business_unit(db, body.business_unit_id)
     if db.get(Product, body.product_id) is None:
@@ -380,6 +397,7 @@ def add_on_order(body: CompanyOnOrderCreateIn, db: Session = Depends(get_db)):
             body.product_id,
             body.quantity,
             body.expected_arrival_date,
+            actor_user_id=user.id,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -388,10 +406,12 @@ def add_on_order(body: CompanyOnOrderCreateIn, db: Session = Depends(get_db)):
 
 
 @router.delete("/on-order/{row_id}", response_model=CompanyInventoryWriteOut)
-def remove_on_order(row_id: str, db: Session = Depends(get_db)):
+def remove_on_order(row_id: str, db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
     """MVP-COMPROMISE[C-03]: see the module docstring."""
     try:
-        result = delete_on_order(db, row_id)
+        result = delete_on_order(db, row_id, actor_user_id=user.id)
     except NotMaintainable as exc:
         db.rollback()
         raise _handle_not_maintainable(exc)
@@ -407,10 +427,12 @@ def remove_on_order(row_id: str, db: Session = Depends(get_db)):
 
 
 @router.patch("/assignments/{row_id}", response_model=CompanyInventoryWriteOut)
-def edit_assignment(row_id: str, body: CompanyAssignmentEditIn, db: Session = Depends(get_db)):
+def edit_assignment(row_id: str, body: CompanyAssignmentEditIn, db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
     """MVP-COMPROMISE[C-03]: see the module docstring."""
     try:
-        result = set_assignment(db, row_id, body.quantity)
+        result = set_assignment(db, row_id, body.quantity, actor_user_id=user.id)
     except NotMaintainable as exc:
         db.rollback()
         raise _handle_not_maintainable(exc)
@@ -423,7 +445,9 @@ def edit_assignment(row_id: str, body: CompanyAssignmentEditIn, db: Session = De
 
 
 @router.post("/assignments", response_model=CompanyInventoryWriteOut, status_code=201)
-def add_assignment(body: CompanyAssignmentCreateIn, db: Session = Depends(get_db)):
+def add_assignment(body: CompanyAssignmentCreateIn, db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
     """MVP-COMPROMISE[C-03]: see the module docstring."""
     from app.models import DemandLine
 
@@ -432,7 +456,10 @@ def add_assignment(body: CompanyAssignmentCreateIn, db: Session = Depends(get_db
     if db.get(Product, body.product_id) is None:
         raise HTTPException(status_code=404, detail="Product not found")
     try:
-        result = create_assignment(db, body.demand_line_id, body.product_id, body.quantity)
+        result = create_assignment(
+            db, body.demand_line_id, body.product_id, body.quantity,
+            actor_user_id=user.id,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     db.commit()
@@ -440,10 +467,12 @@ def add_assignment(body: CompanyAssignmentCreateIn, db: Session = Depends(get_db
 
 
 @router.delete("/assignments/{row_id}", response_model=CompanyInventoryWriteOut)
-def remove_assignment(row_id: str, db: Session = Depends(get_db)):
+def remove_assignment(row_id: str, db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
     """MVP-COMPROMISE[C-03]: see the module docstring."""
     try:
-        result = delete_assignment(db, row_id)
+        result = delete_assignment(db, row_id, actor_user_id=user.id)
     except NotMaintainable as exc:
         db.rollback()
         raise _handle_not_maintainable(exc)

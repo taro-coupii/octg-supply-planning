@@ -122,7 +122,33 @@ class WellSubstitutionApproval(Base):
     )
     requested_at = Column(DateTime, nullable=False, server_default=func.now())
     decided_at = Column(DateTime, nullable=True)
+    #: Server-recorded actors (F09): the authenticated user who raised the
+    #: request and the one who decided it. Never taken from a request body.
+    # No FOREIGN KEY on purpose: this is the RECORD of who acted, and it must
+    # survive that user later being removed. Resolved view-only.
+    requested_by_user_id = Column(String(36), nullable=True)
+    decided_by_user_id = Column(String(36), nullable=True)
 
     demand_line = relationship("DemandLine")
+    requested_by_user = relationship(
+        "User",
+        primaryjoin="foreign(WellSubstitutionApproval.requested_by_user_id) == User.id",
+        viewonly=True,
+    )
+    decided_by_user = relationship(
+        "User",
+        primaryjoin="foreign(WellSubstitutionApproval.decided_by_user_id) == User.id",
+        viewonly=True,
+    )
+
+    @property
+    def requested_by_user_name(self) -> str | None:
+        u = self.requested_by_user
+        return u.display_name if u else None
+
+    @property
+    def decided_by_user_name(self) -> str | None:
+        u = self.decided_by_user
+        return u.display_name if u else None
     from_product = relationship("Product", foreign_keys=[from_product_id])
     to_product = relationship("Product", foreign_keys=[to_product_id])

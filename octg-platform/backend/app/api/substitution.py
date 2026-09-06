@@ -1,9 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session, joinedload
 
+from app.auth.deps import get_current_user
 from app.db import get_db
 from app.engines.coverage import compute_customer_coverage, recompute_well
 from app.engines.substitution import (
+    ApprovalAlreadyDecided,
     approval_by_date,
     decide_approval,
     find_candidates,
@@ -13,6 +15,7 @@ from app.auth.scope import planner_bu
 from app.models import (
     DemandLine,
     PlanningNode,
+    User,
     Product,
     SubstitutionApprovalStatus,
     Well,
@@ -99,6 +102,7 @@ def list_substitution_approvals(
             status=a.status.value,
             requested_at=a.requested_at,
             decided_at=a.decided_at,
+            decided_by_user_name=a.decided_by_user_name,
             well_id=well.id if well is not None else None,
             well_name=well.name if well is not None else None,
             customer_name=(
@@ -180,7 +184,10 @@ def list_substitution_candidates(demand_line_id: str, db: Session = Depends(get_
     response_model=SubstitutionApprovalOut,
 )
 def create_substitution_approval(
-    demand_line_id: str, body: SubstitutionApprovalIn, db: Session = Depends(get_db)
+    demand_line_id: str,
+    body: SubstitutionApprovalIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     line = _get_line(db, demand_line_id)
     # Validated here, not trusted: an unknown product id would otherwise
@@ -191,7 +198,9 @@ def create_substitution_approval(
             raise HTTPException(
                 status_code=404, detail=f"{label} {pid} names no product"
             )
-    approval = request_approval(db, line, body.from_product_id, body.to_product_id)
+    approval = request_approval(
+        db, line, body.from_product_id, body.to_product_id, actor_user_id=user.id
+    )
     db.commit()
     db.refresh(approval)
     return approval
@@ -202,26 +211,23 @@ def create_substitution_approval(
     response_model=SubstitutionApprovalOut,
 )
 def decide_substitution_approval(
-    approval_id: str, body: SubstitutionDecisionIn, db: Session = Depends(get_db)
+    approval_id: str,
+    body: SubstitutionDecisionIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     existing = db.get(WellSubstitutionApproval, approval_id)
     if existing is None:
         raise HTTPException(status_code=404, detail="Substitution approval not found")
-    # A decided approval is FINAL (product-owner decision, 2026-08-12): coverage
-    # has already been recomputed on top of the verdict, so silently re-deciding
-    # would rewrite history under it. Reversal = raise a NEW approval request
-    # (the existing "an Approved verdict beats a later Pending" rule then
-    # governs which one wins).
-    if existing.status != SubstitutionApprovalStatus.PENDING:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                f"This approval was already decided ({existing.status.value}). "
-                "A decision is final; to reverse it, raise a new approval "
-                "request for the same demand line."
-            ),
+    # A decided approval is FINAL (product-owner decision, 2026-08-12). The rule
+    # is enforced by `decide_approval` itself (F06), so this endpoint only
+    # translates the refusal; it is not the last line of defence.
+    try:
+        approval = decide_approval(
+            db, approval_id, body.approved, actor_user_id=user.id
         )
-    approval = decide_approval(db, approval_id, body.approved)
+    except ApprovalAlreadyDecided as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
     # The decision changes the well-layer verdict, so coverage for the affected
     # well must be recomputed before the response is returned.
     recompute_well(db, approval.demand_line.well)

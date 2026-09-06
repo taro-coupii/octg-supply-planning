@@ -642,6 +642,7 @@ def update_customer_configuration(
             for w in change.well_changes
         ],
         recomputes_performed=change.recomputes_performed,
+        neighbour_recompute_failures=list(change.neighbour_recompute_failures),
         coverage_resolvable_before=change.coverage_resolvable_before,
         unresolved_reason=change.unresolved_reason,
         note=_config_note(change),

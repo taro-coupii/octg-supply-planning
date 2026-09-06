@@ -227,7 +227,11 @@ SUMMARY_COLUMNS: list[tuple[str, int]] = [
     ("Action", 24),
     ("Product", 34),
     ("Product ID", 14),
-    ("Quantity", 14),
+    ("Net Shortfall", 14),
+    ("Demand", 14),
+    ("Drawn Customer-owned", 14),
+    ("Drawn Company", 14),
+    ("Drawn Substitute", 14),
     ("Unit", 8),
     ("ROS Date", 12),
     ("Required Ship Date", 14),
@@ -240,6 +244,9 @@ SUMMARY_COLUMNS: list[tuple[str, int]] = [
 ]
 
 
+_SUMMARY_INDEX = {name: i for i, (name, _w) in enumerate(SUMMARY_COLUMNS)}
+
+
 def _summary_row(rec: MrpRecommendation) -> list:
     months, basis = _lead_time_cell(rec)
     return [
@@ -247,6 +254,10 @@ def _summary_row(rec: MrpRecommendation) -> list:
         _product_label(rec.product_id, rec.product_description),
         rec.product_id,
         _qty(rec.quantity),
+        _qty(rec.demand_quantity),
+        _qty(rec.drawn_customer_owned),
+        _qty(rec.drawn_company),
+        _qty(rec.drawn_substitute),
         _unit(rec.unit_of_measure),
         _day(rec.ros_date),
         _day(rec.required_ship_date),
@@ -328,7 +339,10 @@ def _write_summary(sheet, recommendations: list[MrpRecommendation], scope: str) 
             continue
         for rec in rows:
             sheet.append(_summary_row(rec))
-            for col in (6, 7, 8):
+            # Resolved by NAME, not a hard-coded index: the F04 breakdown
+            # columns shifted every date column to the right once already.
+            for name in ("ROS Date", "Required Ship Date", "Recommended Order Date"):
+                col = _SUMMARY_INDEX[name] + 1
                 sheet.cell(row=sheet.max_row, column=col).number_format = "yyyy-mm-dd"
 
 

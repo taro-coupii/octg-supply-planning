@@ -928,7 +928,7 @@ def _seed_oracle_release_blocked_substitute(
     layers clear, so it IS offered as a candidate -- but it can never produce
     CoveredViaSubstitute, because releasing a hard reservation is not something this
     platform does. The recommended action names the Oracle step:
-    The user must go into Oracle themselves and release the hard assignment.
+    "the user must go into Oracle themselves and release the hard assignment".
 
         primary    CSG 8-5/8 36.0 L80    0 on hand
         substitute CSG 8-5/8 40.0 L80 5000 on hand, ALL 5000 assigned to
