@@ -1876,6 +1876,12 @@ _DELETE_ORDER = (
     "customers",
     "products",
     "lead_time_components",
+    # Dev logins FK their Business Unit (a planner is scoped to one), and foreign
+    # keys are enforced on every connection since F10 -- so with a planner user
+    # present, deleting business_units failed and the whole reset rolled back.
+    # `seed_users` re-creates them; the documented sequence runs it after the
+    # world seed.
+    "users",
     "business_units",
 )
 

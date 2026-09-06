@@ -632,4 +632,69 @@ from the pool", which is the customer's pool (block included) in the
 long-standing sense; aligning it with the Executive split waits for SOFT
 reservations to appear in real data.
 
-**Next**: ③ the demo re-baseline, C-12 / C-14 / login rate limiting, D02–D04.
+**Next**: C-12 / C-14 / login rate limiting, D02–D04.
+
+## 25. 2026-09-06: the demo re-baseline (owner ruling ③)
+
+**Problem**: under Business-Unit-wide allocation the demo showed 2 of 27
+confirmed wells covered, no PendingApproval and no CoveredViaSubstitute
+verdicts. The cause was the stock mix (60,000 m of the 20" conductor — five
+years of demand — while two tubing strings were about 37,000 m short). The
+seed's printed claim that item 8's substitute candidate was "blocked pending
+Oracle release" had also stopped being true after D01: item 8's own demand
+drained the thin pool and the candidate fell to an inventory block.
+
+**Ruling (AskUserQuestion)**: option A — rebuild `seed_demo`'s inventory
+(move the conductor surplus into the short items, roughly 85% of twelve
+months' demand per item).
+
+**Implementation (`seed/seed_demo.py`, 751 tests green)**:
+1. **Inventory rule** `ON_HAND_SHARE_OF_12M`: a share of the next twelve
+   months of confirmed demand (1: 1.10 / 2: 1.00 / 5: 0.65 / 6: 0.95 / 7: 0.85 /
+   9: 0.75 / 10: 0.65, ±4% jitter). **Items 3 and 8 alone hold the whole
+   confirmed programme plus headroom** (3: +2,000, 8: +4,000). Reason: coverage
+   evaluates every confirmed well in one pass regardless of ROS, so the residual
+   a substitute can draw exists only after three years of confirmed lines have
+   drawn; showing the approval flow at all requires the substitute-side items
+   to exceed their entire confirmed demand. Result: eight items near the 85%
+   target, 3 and 8 at 1.4–1.6× twelve months, total 0.98× twelve months (the
+   conductor drops from 60,000 to 11,274).
+2. **The item-8 story made true under D01**: on-hand = its own confirmed
+   demand + `ITEM_8_RESIDUAL` (4,000). The approved 9→8 line is larger than the
+   residual but within residual + the 3,950 Oracle claim, so "blocked pending
+   Oracle release" actually renders (one `hard-assigned to another demand line`
+   reason, one `releasing it would close the gap`). Item-9 lines within the
+   residual come back PendingApproval.
+3. **Targeted proposals** in `_seed_substitution_proposals`: the two approved
+   ones on item-2 lines (→3, which has headroom → CoveredViaSubstitute), the
+   three pending ones on item-9 lines that fit item 8's residual. "Earliest
+   first" used to attach proposals to substitutes with no stock, leaving every
+   line Uncovered.
+4. **Item 2's 1,200 safety stock seeded** — a row that had been added by hand
+   to dev.db (the premise of the scenario's "safety dip becomes a runout"
+   story). MOR shows 1,092 in Mar 2027 (amber).
+5. **The demo scenario seeded** by `_seed_demo_scenario`: 8 overrides across
+   6 stories (two quantity increases, a ROS pull-in plus firming the well, a
+   well dropped to Budgeted, a PO slip, an Oracle release, an approval).
+   Resolved by well name and product and passed through the same `validate` /
+   `assert_target_in_scope` the API uses. It used to be built through the API
+   against fixed ids and vanished on `--reset`. Preview: 140 line changes, 27
+   verdict flips.
+6. **`users` added to `_DELETE_ORDER`** (`seed_from_workbook.py`, shared by
+   both seeds): since F10 turned foreign keys on, a planner user referencing
+   its Business Unit rolled the whole `--reset` back.
+7. The seed's self-audit window widened from 120 to 180 days (the re-baseline
+   deliberately covers the wells already delivered).
+
+**The demo now** (dev.db regenerated, `seed_users` included): 27 confirmed
+wells = 9 Covered / 18 Uncovered (past ROS 3/4, 0–6 months 6/11, beyond six
+months waiting on POs = Uncovered). Line verdicts Covered 85 /
+CoveredViaSubstitute 2 / PendingApproval 6 / Uncovered 37 / Unrecoverable 5.
+Executive coverage 63.3% (MT). Two surplus rows (item 3: 2,250, item 8:
+4,250). Three pending requests plus three lines awaiting a request.
+
+**Manual**: 19 screenshots retaken, `manual.html` regenerated. The generator
+now lives in the private repository under `frontend/manual-src/` (it is not
+mirrored here: the section texts are bilingual).
+
+**Next**: C-12 / C-14 / login rate limiting, D02–D04.

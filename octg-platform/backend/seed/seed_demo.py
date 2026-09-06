@@ -21,12 +21,17 @@ THE WORLD (user-specified, 2026-08-11)
 * Each well uses one of five casing designs (item numbers below); the last
   "+ N contingency" item is a CONTINGENCY-profile line. Quantities grow
   toward the tubing: the big-OD conductor is short, the TBG string longest.
-* Inventory: on-hand per product covers the next 6 months of CONFIRMED
-  demand, with deliberate exceptions -- item 5 runs SHORT (~60%) and item 1
-  holds an extreme EXCESS (beyond two years of demand). On-order covers
-  months 7-12 of confirmed demand, again with exceptions -- item 4 has NO
-  purchase-order row at all (its on-order position is UNKNOWN, not zero) and
-  one of item 9's POs has no promised date.
+* Inventory (re-baselined 2026-09-06 after D01, owner ruling): on-hand per
+  product is a SHARE of the next 12 months of CONFIRMED demand
+  (`ON_HAND_SHARE_OF_12M`) -- most items near a year of stock, items 5 / 7 /
+  9 / 10 deliberately SHORT, item 1 a mild surplus. Items 3 and 8 hold
+  headroom beyond the whole confirmed programme so the substitution and
+  approval stories have real steel to point at (see `_seed_inventory` and
+  `_seed_hard_assignments`). On-order covers months 7-12 of confirmed demand,
+  with exceptions -- item 4 has NO purchase-order row at all (its on-order
+  position is UNKNOWN, not zero) and one of item 9's POs has no promised date.
+* One DRAFT what-if scenario, "AkerBP full replan", with one override per
+  override family, built by `_seed_demo_scenario` so a re-seed keeps it.
 * Customer-owned stock: small parcels only, never enough for a full well.
 * General (technical) substitutions, reading "A substitute B" as "A can
   serve as the substitute FOR B": 2⇄3, 6→for 5, 8→for 9. Customer rules
@@ -61,6 +66,8 @@ from app.engines.coverage import (
     recompute_customer,
     set_well_demand_status,
 )
+from app.engines.overrides import validate as validate_override
+from app.engines.scenario import assert_target_in_scope
 from app.engines.substitution import decide_approval, request_approval
 from app.models import (
     ANY_ATTRIBUTE_VALUE,
@@ -83,6 +90,10 @@ from app.models import (
     PlanningNode,
     Product,
     SafetyStock,
+    Scenario,
+    ScenarioOverride,
+    ScenarioStatus,
+    ScenarioTargetKind,
     TechnicalSubstitution,
     UnitOfMeasure,
     Well,
@@ -338,9 +349,41 @@ def _confirmed_demand_between(db, product_id, start, end) -> float:
     return sum(l.quantity for l in lines)
 
 
+#: On-hand as a share of the next TWELVE months of confirmed demand, per item
+#: (owner ruling 2026-09-06, the demo re-baseline after D01). The old shape --
+#: six months of stock with a 60,000 m mountain of the 20" conductor -- left the
+#: Business-Unit-wide pass with 2 of 27 confirmed wells covered and nothing for
+#: the approval flow to show. The conductor surplus is redistributed into the
+#: strings that were short; items still deliberately run SHORT so gaps,
+#: Unrecoverable verdicts and the substitution programme all have live cases:
+#:
+#:   1  mild surplus (a cheap conductor is held ahead of need, not 5 years of it)
+#:   2  roughly a year of stock; its own uncovered lines carry the APPROVED 2->3
+#:      proposals, which item 3's headroom then turns into CoveredViaSubstitute
+#:   5, 7, 9, 10  SHORT -- 5 is the critical string with a safety stock and the
+#:      5->6 rule, 9 is the 13CR tubing whose substitute is item 8
+#:   4, 8  sized later by `_seed_hard_assignments` for the two Oracle stories
+ON_HAND_SHARE_OF_12M = {
+    1: 1.10, 2: 1.00, 5: 0.65, 6: 0.95, 7: 0.85, 9: 0.75, 10: 0.65,
+    # placeholders, overwritten by the story sizing below
+    4: 1.00, 8: 1.00,
+}
+#: Item 3 is the one substitute-side item that must hold steel AFTER every
+#: confirmed line of the three-year programme has drawn (that residual is what an
+#: approved substitute draws on, since the pass evaluates every confirmed well at
+#: once). Two item-2 lines' worth -- the two approved 2->3 proposals.
+ITEM_3_HEADROOM = 2 * QTY_4[1]
+#: Item 8's residual after every confirmed line has drawn: what a 9->8
+#: substitute candidate can actually see. Just above a typical 13CR tubing line
+#: (3,500 m nominal, jittered), so the PENDING 9->8 proposals fit under it and
+#: the over-subscription note has several claimants on the same steel.
+ITEM_8_RESIDUAL = 4000.0
+
+
 def _seed_inventory(db, bu, products):
-    """On-hand = next 6 months of confirmed demand (exceptions: item 5 short,
-    item 1 extreme excess). On-order = months 7-12 of confirmed demand
+    """On-hand = `ON_HAND_SHARE_OF_12M` x the next 12 months of confirmed demand
+    (item 3: all confirmed demand + `ITEM_3_HEADROOM`; items 4 and 8 are resized
+    by the hard-assignment stories). On-order = months 7-12 of confirmed demand
     (exceptions: item 4 has NO row -> unknown; one item-9 PO is undated)."""
     six_months = _month_offset(6, day=1)
     twelve_months = _month_offset(12, day=1)
@@ -349,28 +392,19 @@ def _seed_inventory(db, bu, products):
     # ~2 months into the past): their steel was delivered, so a well that
     # already spudded should read Covered, not as a fake gap.
     window_start = NOW - timedelta(days=95)
+    far_future = NOW + timedelta(days=365 * 10)
     for number, product in products.items():
-        next6 = _confirmed_demand_between(db, product.id, window_start, six_months)
-        if number == 5:
-            on_hand = round(next6 * 0.6)          # deliberate SHORTAGE
-        elif number == 1:
-            on_hand = 60000.0                     # extreme EXCESS (> 2y demand)
-        elif number in {t for _f, t in TECH_SUBS}:
-            # Substitute-side items carry HEADROOM beyond their own demand, so
-            # a pending substitution proposal has real steel to point at --
-            # otherwise every proposal would sit Uncovered and the
-            # PendingApproval verdict would never appear in the demo.
-            on_hand = round(next6 * RNG.uniform(1.1, 1.3)) + 4000
-        elif number in (7, 9, 10):
-            # More products run SHORT inside the first months, so gap wells
-            # (Unrecoverable / Uncovered / PendingApproval) appear early
-            # enough to make the demo tense -- not only at the 6-month PO
-            # boundary. Item 9 shorting also feeds the substitution story:
-            # its substitute (item 8) is the one holding headroom.
-            on_hand = round(next6 * {7: 0.35, 9: 0.7, 10: 0.6}[number])
+        next12 = _confirmed_demand_between(
+            db, product.id, window_start, twelve_months)
+        if number == 3:
+            every_confirmed = _confirmed_demand_between(
+                db, product.id, window_start - timedelta(days=365), far_future)
+            on_hand = round(every_confirmed + ITEM_3_HEADROOM)
         else:
-            # Healthy but uneven: real stock never sits at exactly 115%.
-            on_hand = round(next6 * RNG.uniform(1.05, 1.4)) or 2000
+            # Uneven on purpose: real stock never sits at exactly the share.
+            on_hand = round(
+                next12 * ON_HAND_SHARE_OF_12M[number] * RNG.uniform(0.96, 1.04)
+            ) or 2000
         db.add(InventoryOnHand(
             business_unit_id=bu.id, product_id=product.id,
             quantity=float(on_hand), source_system="synthetic",
@@ -434,10 +468,14 @@ def _seed_customer_owned(db, equinor, akerbp, products):
 
 
 def _seed_safety_stocks(db, products):
-    """Two products carry an explicit safety stock so the Administration tab
+    """Three products carry an explicit safety stock so the Administration tab
     and the MOR trigger ("orders fire when the balance dips below safety, not
-    zero") both have a live demo case."""
+    zero") both have a live demo case. Item 2's floor is the one the demo
+    scenario's programme-growth story pushes through (an amber safety dip on
+    Order Requirements becoming a physical runout)."""
     for number, quantity, note in (
+        (2, 1200.0, "Surface casing floor -- the demo scenario's growth story "
+                    "turns this dip into a runout."),
         (5, 1500.0, "Critical string -- runs short; keep a buffer while the "
                     "substitution programme is live."),
         (8, 1000.0, "High-runner TBG; one well's tubing as a floor."),
@@ -446,7 +484,7 @@ def _seed_safety_stocks(db, products):
             product_id=products[number].id, quantity=quantity, note=note,
         ))
     db.flush()
-    print("safety stocks: items 5 and 8")
+    print("safety stocks: items 2, 5 and 8")
 
 
 def _seed_revision_history(db, products):
@@ -641,6 +679,49 @@ def _seed_hard_assignments(db, bu, products, equinor, akerbp):
     if ak8:
         claim = ak8[-1]
         _assign(claim, claim.quantity)
+        # The Oracle-release block only outranks lower layers once customer
+        # AND well approval are already granted (substitution.BLOCK_PRIORITY)
+        # -- so grant them on ONE uncovered item-9 line: approved on paper,
+        # blocked by the hard assignment, exactly the story to demo.
+        # Must be an EQUINOR line: the assignment only blocks a FOREIGN
+        # customer's candidate (a same-customer assignment is not "reserved
+        # elsewhere" -- see coverage._hard_assigned_for_substitutes).
+        # The residual left for substitutes: pending 9->8 proposals on lines
+        # no larger than this come back PENDING_APPROVAL (steel exists,
+        # approval outstanding), while the ONE approved line is chosen LARGER
+        # than it -- so that one is short by less than the claimed parcel and
+        # is blocked pending Oracle release.
+        residual = ITEM_8_RESIDUAL
+        nine_line = max(
+            (
+                l for l in _confirmed_lines(9, equinor)
+                if residual < l.quantity <= residual + claim.quantity
+            ),
+            key=lambda l: l.quantity,
+            default=None,
+        )
+        # Size item 8 so the story is TRUE under Business-Unit-wide allocation
+        # (D01): every confirmed item-8 line of either customer draws the pool
+        # first, in ROS order, so what a substitute candidate can see is the
+        # residual AFTER all of them. The residual is set just below the
+        # approved item-9 line's need, and the hard-claimed parcel would close
+        # the gap:  available < required <= available + hard_assigned
+        # (substitution.BLOCK_ORACLE_RELEASE). Sizing it to "claim + 3000", as
+        # this used to, left nothing after item 8's own wells and the candidate
+        # came back blocked by inventory instead -- a different, weaker story.
+        own_demand = sum(
+            l.quantity
+            for l in _confirmed_lines(8, equinor) + _confirmed_lines(8, akerbp)
+        ) + sum(
+            l.quantity
+            for l in db.query(DemandLine)
+            .join(Well, DemandLine.well_id == Well.id)
+            .filter(
+                Well.demand_status == DemandStatus.CONFIRMED,
+                DemandLine.product_id == products[8].id,
+                DemandLine.profile == DemandProfile.CONTINGENCY,
+            )
+        )
         row = (
             db.query(InventoryOnHand)
             .filter(
@@ -649,23 +730,11 @@ def _seed_hard_assignments(db, bu, products, equinor, akerbp):
             )
             .one()
         )
-        row.quantity = claim.quantity + 3000.0   # claimed parcel + thin pool
+        row.quantity = own_demand + residual
         print(f"hard-assignment demo (substitution): item 8, "
               f"{claim.quantity:.0f} claimed by well {claim.well.name}, "
-              f"free pool squeezed to 3000")
-        # The Oracle-release block only outranks lower layers once customer
-        # AND well approval are already granted (substitution.BLOCK_PRIORITY)
-        # -- so grant them on ONE uncovered item-9 line: approved on paper,
-        # blocked by the hard assignment, exactly the story to demo.
-        # Must be an EQUINOR line: the assignment only blocks a FOREIGN
-        # customer's candidate (a same-customer assignment is not "reserved
-        # elsewhere" -- see coverage._hard_assigned_for_substitutes).
-        nine_lines = _confirmed_lines(9, equinor)
-        nine_line = next(
-            (l for l in nine_lines
-             if 3000.0 < l.quantity <= claim.quantity + 3000.0),
-            None,
-        )
+              f"on-hand set to own confirmed demand {own_demand:.0f} + "
+              f"residual {residual:.0f}")
         if nine_line is not None:
             approval = request_approval(
                 db, nine_line,
@@ -709,13 +778,9 @@ def _seed_substitution_proposals(db, products):
     pending_target, approved_target = 3, 2
     made_pending = made_approved = 0
     used_wells = set()
-    for line in candidates:
-        if line.well_id in used_wells:
-            continue
-        # Targets checked BEFORE requesting: the old order created a 4th,
-        # uncounted PENDING approval on the break iteration.
-        if made_approved >= approved_target and made_pending >= pending_target:
-            break
+
+    def _raise(line, approve):
+        nonlocal made_pending, made_approved
         f, t = from_ids[line.product_id]
         approval = request_approval(
             db, line,
@@ -723,13 +788,232 @@ def _seed_substitution_proposals(db, products):
             to_product_id=products[t].id,
         )
         used_wells.add(line.well_id)
-        if made_approved < approved_target:
+        if approve:
             decide_approval(db, approval.id, approved=True)
             made_approved += 1
         else:
             made_pending += 1
+
+    # Every confirmed well of the three-year programme draws in the one pass,
+    # so a substitute only has steel for a proposal if its product holds a
+    # residual AFTER all of them: item 3 does (`ITEM_3_HEADROOM`, for the
+    # APPROVED 2->3 proposals -> CoveredViaSubstitute) and item 8 does
+    # (`ITEM_8_RESIDUAL`, for the PENDING 9->8 proposals -> PendingApproval).
+    # Proposals raised anywhere else would be honest but invisible: the line
+    # would stay Uncovered with "substitute also short", which is not what a
+    # demo of the approval flow needs to show first.
+    preferred = {
+        True: [l for l in candidates if from_ids[l.product_id][0] == 2],
+        False: [
+            l for l in candidates
+            if from_ids[l.product_id][0] == 9 and l.quantity <= ITEM_8_RESIDUAL
+        ],
+    }
+    for approve, target in ((True, approved_target), (False, pending_target)):
+        for line in preferred[approve]:
+            if (made_approved if approve else made_pending) >= target:
+                break
+            if line.well_id in used_wells:
+                continue
+            _raise(line, approve)
+    # Fallback for a world where the preferred lines ran out: earliest first.
+    for line in candidates:
+        if made_approved >= approved_target and made_pending >= pending_target:
+            break
+        if line.well_id in used_wells:
+            continue
+        _raise(line, approve=made_approved < approved_target)
     print(f"substitution proposals: {made_pending} pending, {made_approved} approved")
     db.flush()
+
+
+def _seed_demo_scenario(db, bu, products, equinor, akerbp):
+    """ONE draft scenario with an override from every family, resolved by well
+    name and product so a re-seed rebuilds it (it used to be hand-made through
+    the API against fixed ids, and a `--reset` silently dropped it).
+
+    Each override is checked with the SAME validators the API applies
+    (`app.engines.overrides.validate`, `app.engines.scenario
+    .assert_target_in_scope`), so nothing here can create a shape the screen
+    would refuse. A story whose target does not exist in this world is skipped
+    with a note rather than guessed.
+    """
+    def _well(name):
+        return db.query(Well).filter(Well.name == name).one_or_none()
+
+    def _line(well, product_no, profile=DemandProfile.PRIMARY):
+        if well is None:
+            return None
+        return next(
+            (l for l in well.demand_lines
+             if l.product_id == products[product_no].id and l.profile == profile),
+            None,
+        )
+
+    scenario = Scenario(
+        name="AkerBP full replan — demand, supply & approvals what-if",
+        description="",   # written below, from what was actually resolved
+        business_unit_id=bu.id,
+        status=ScenarioStatus.DRAFT,
+        created_by="Demo",
+    )
+    db.add(scenario)
+    db.flush()
+
+    stories: list[str] = []
+    overrides: list[ScenarioOverride] = []
+
+    def _add(override, story):
+        validate_override(override, bu)
+        assert_target_in_scope(db, scenario, override)
+        overrides.append(override)
+        stories.append(story)
+
+    # (1) programme growth -- two CSG 13-3/8 L80 lines grow, which turns the
+    #     amber safety-stock dip on Order Requirements into a physical runout.
+    grown = []
+    for well_name, new_qty in (("SK-A03", 1600.0), ("VF-A06", 1700.0)):
+        line = _line(_well(well_name), 2)
+        if line is None:
+            print(f"  scenario: no {well_name} item-2 line; growth story skipped")
+            continue
+        _add(ScenarioOverride(
+            scenario_id=scenario.id, target_kind=ScenarioTargetKind.DEMAND_LINE,
+            target_demand_line_id=line.id, field_name="quantity",
+            value_number=new_qty,
+            note=f"{well_name} {line.quantity:.0f} -> {new_qty:.0f}: programme growth",
+        ), None)
+        grown.append(f"{well_name} {line.quantity:,.0f}→{new_qty:,.0f}")
+    if grown:
+        stories[-len(grown):] = []
+        stories.append(
+            f"programme growth — {' and '.join(grown)} Mtr of "
+            f"{products[2].description}, turning the amber safety-stock dip on "
+            "Order Requirements into a physical runout"
+        )
+
+    # (2) acceleration -- a Planned year-3 well's tubing pulled into next year,
+    #     and the well itself firmed up so the pull-in enters the confirmed scope.
+    fast_well = _well("SK-C09")
+    fast_line = _line(fast_well, 8)
+    if fast_line is not None:
+        pulled_to = _month_offset(12, day=1)
+        _add(ScenarioOverride(
+            scenario_id=scenario.id, target_kind=ScenarioTargetKind.DEMAND_LINE,
+            target_demand_line_id=fast_line.id, field_name="ros_date",
+            value_date=pulled_to,
+            note=(f"SK-C09 campaign accelerated: "
+                  f"{fast_line.ros_date:%b %Y} -> {pulled_to:%b %Y}"),
+        ), None)
+        _add(ScenarioOverride(
+            scenario_id=scenario.id, target_kind=ScenarioTargetKind.WELL,
+            target_well_id=fast_well.id, field_name="demand_status",
+            value_text=DemandStatus.CONFIRMED.value,
+            note=("SK-C09 campaign firms up — enters the confirmed programme "
+                  "(pairs with its ROS pull-in)"),
+        ), None)
+        stories[-2:] = []
+        stories.append(
+            f"acceleration — SK-C09 {fast_line.quantity:,.0f} Mtr of "
+            f"{products[8].description} pulled from {fast_line.ros_date:%b %Y} to "
+            f"{pulled_to:%b %Y}, and the well firmed up into the confirmed programme"
+        )
+    else:
+        print("  scenario: no SK-C09 item-8 line; acceleration story skipped")
+
+    # (3) programme slip -- a confirmed well drops to Budgeted and frees its steel.
+    slip_well = _well("SK-A04")
+    if slip_well is not None and slip_well.demand_status == DemandStatus.CONFIRMED:
+        _add(ScenarioOverride(
+            scenario_id=scenario.id, target_kind=ScenarioTargetKind.WELL,
+            target_well_id=slip_well.id, field_name="demand_status",
+            value_text=DemandStatus.BUDGETED.value,
+            note="SK-A04 slips out of the firm programme",
+        ), "programme slip — well SK-A04 drops from Confirmed to Budgeted, "
+           "leaving the firm demand scope and freeing its steel")
+    else:
+        print("  scenario: SK-A04 not a confirmed well; slip story skipped")
+
+    # (4) mill slip -- item 3's purchase order lands six months late.
+    po = (
+        db.query(InventoryOnOrder)
+        .filter(
+            InventoryOnOrder.business_unit_id == bu.id,
+            InventoryOnOrder.product_id == products[3].id,
+            InventoryOnOrder.expected_arrival_date.isnot(None),
+        )
+        .order_by(InventoryOnOrder.expected_arrival_date)
+        .first()
+    )
+    if po is not None:
+        was = po.expected_arrival_date
+        late = datetime(was.year + (was.month + 5) // 12,
+                        (was.month + 5) % 12 + 1, 15)
+        _add(ScenarioOverride(
+            scenario_id=scenario.id, target_kind=ScenarioTargetKind.PO_ARRIVAL,
+            target_product_id=products[3].id, field_name="arrival_date",
+            value_date=late,
+            note=(f"Mill slips the {po.quantity:,.0f} Mtr {products[3].description} "
+                  f"delivery {was:%b %Y} -> {late:%b %Y}"),
+        ), f"mill slip — the {po.quantity:,.0f} Mtr {products[3].description} PO "
+           f"slides from {was:%b %Y} to {late:%b %Y}")
+    else:
+        print("  scenario: no dated item-3 PO; mill-slip story skipped")
+
+    # (5) Oracle release -- the hard-claimed item-8 parcel goes back to the pool.
+    claim = (
+        db.query(InventoryAssignment)
+        .filter(InventoryAssignment.product_id == products[8].id)
+        .first()
+    )
+    if claim is not None:
+        _add(ScenarioOverride(
+            scenario_id=scenario.id, target_kind=ScenarioTargetKind.ASSIGNMENT,
+            target_demand_line_id=claim.demand_line_id,
+            target_product_id=claim.product_id, field_name="quantity",
+            value_number=0.0,
+            note=(f"What if Oracle releases the {claim.quantity:,.0f} Mtr "
+                  f"hard-assigned to {claim.demand_line.well.name}"),
+        ), f"Oracle release — the {claim.quantity:,.0f} Mtr hard assignment on "
+           f"{claim.demand_line.well.name} released to the shared pool")
+    else:
+        print("  scenario: no item-8 assignment; Oracle-release story skipped")
+
+    # (6) customer decision -- the earliest pending substitution approved.
+    from app.models import SubstitutionApprovalStatus, WellSubstitutionApproval
+    pending = (
+        db.query(WellSubstitutionApproval)
+        .join(DemandLine, DemandLine.id == WellSubstitutionApproval.demand_line_id)
+        .filter(WellSubstitutionApproval.status == SubstitutionApprovalStatus.PENDING)
+        .order_by(DemandLine.ros_date)
+        .first()
+    )
+    if pending is not None:
+        well_name = pending.demand_line.well.name
+        _add(ScenarioOverride(
+            scenario_id=scenario.id,
+            target_kind=ScenarioTargetKind.SUBSTITUTION_APPROVAL,
+            target_demand_line_id=pending.demand_line_id,
+            target_to_product_id=pending.to_product_id,
+            field_name="approval_status",
+            value_text=SubstitutionApprovalStatus.APPROVED.value,
+            note=f"Customer approves the pending substitute on {well_name}",
+        ), f"customer decision — the pending substitution on {well_name} approved")
+    else:
+        print("  scenario: no pending approval; customer-decision story skipped")
+
+    for override in overrides:
+        db.add(override)
+    scenario.description = (
+        "The platform-wide demo scenario, one override per story: "
+        + "; ".join(f"({i}) {text}" for i, text in enumerate(stories, start=1))
+        + ". Preview shows how coverage, allocation and MRP move together — "
+        "nothing is saved until Apply."
+    )
+    scenario.version = 1 + len(overrides)
+    db.flush()
+    print(f"demo scenario: {len(overrides)} overrides across {len(stories)} stories")
+    return scenario
 
 
 def main(argv=None):
@@ -784,6 +1068,11 @@ def main(argv=None):
             recompute_customer(db, customer)
         db.commit()
 
+        # The what-if scenario LAST, against the final picture (its approval
+        # override points at a proposal raised just above).
+        _seed_demo_scenario(db, bu, products, equinor, akerbp)
+        db.commit()
+
         wells = db.query(Well).count()
         lines = db.query(DemandLine).count()
         print(f"seeded: 1 BU, 2 customers, {len(products)} products, "
@@ -793,7 +1082,10 @@ def main(argv=None):
         from app.models import CoverageResult, CoverageStatus
         # Inside the lead-time fence a gap comes back UNRECOVERABLE, not
         # Uncovered -- both are "the demo opens with a problem", so both count.
-        horizon = NOW + timedelta(days=120)
+        # Six months: the re-baselined world (2026-09-06) deliberately covers
+        # the wells already spudded and the next few, so the opening problems
+        # sit between the overdue Oracle-release well and month five.
+        horizon = NOW + timedelta(days=180)
         early_gaps = (
             db.query(Well.id).distinct()
             .join(DemandLine, DemandLine.well_id == Well.id)
@@ -807,7 +1099,7 @@ def main(argv=None):
         )
         impacts = db.query(ImpactRecord).count()
         print(f"demo audit: {early_gaps} wells with a coverage gap inside "
-              f"120 days, {impacts} impact records")
+              f"180 days, {impacts} impact records")
         if early_gaps < 3:
             print("WARNING: fewer than 3 near-term gap wells -- "
                   "the demo opens flat", file=sys.stderr)
