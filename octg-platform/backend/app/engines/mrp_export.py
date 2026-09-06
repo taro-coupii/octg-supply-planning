@@ -891,6 +891,7 @@ def _safe(text: str, fallback: str) -> str:
 def build_mrp_export(
     db: Session,
     customer=None,
+    business_unit_id: str | None = None,
     today: date | None = None,
 ) -> MrpExport:
     """The MRP workbook: summary on tab 1, supporting detail on tabs 2 onward.
@@ -917,7 +918,10 @@ def build_mrp_export(
     )
 
     recommendations = mrp_summary(
-        db, customer_id=(customer.id if customer is not None else None), today=today
+        db,
+        customer_id=(customer.id if customer is not None else None),
+        business_unit_id=business_unit_id,
+        today=today
     )
     analyses, unavailable = _analyses(db, recommendations, today)
 

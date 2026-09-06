@@ -2,6 +2,7 @@ from datetime import date, datetime
 
 from pydantic import BaseModel
 
+from app.quantities import Quantity
 from app.models import (
     AllocationPolicy,
     DemandProfile,
@@ -237,7 +238,9 @@ class DemandRevisionIn(BaseModel):
     generic validation error that could not point anywhere useful.
     """
 
-    quantity: float
+    #: Finite, bounded, non-negative at the schema; > 0 and whole-for-PC/JT are
+    #: checked by the handler once the line's product (and so its unit) is known.
+    quantity: Quantity
     ros_date: datetime
     profile: DemandProfile
     #: Always refused. Present so it can be refused explicitly. See above.
@@ -1792,7 +1795,7 @@ class ScenarioOverrideIn(BaseModel):
     target_from_product_id: str | None = None
     target_to_product_id: str | None = None
 
-    value_number: float | None = None
+    value_number: Quantity | None = None
     value_date: datetime | None = None
     value_text: str | None = None
 
@@ -2460,7 +2463,7 @@ class CompanyOnHandEditIn(BaseModel):
     treats as Oracle-owned. See MVP_COMPROMISES.md C-03.
     """
 
-    quantity: float
+    quantity: Quantity
 
 
 class CompanyOnHandCreateIn(BaseModel):
@@ -2472,7 +2475,7 @@ class CompanyOnHandCreateIn(BaseModel):
 
     business_unit_id: str
     product_id: str
-    quantity: float
+    quantity: Quantity
 
 
 class CompanyOnOrderEditIn(BaseModel):
@@ -2481,7 +2484,7 @@ class CompanyOnOrderEditIn(BaseModel):
     MVP-COMPROMISE[C-03]: see `CompanyOnHandEditIn`.
     """
 
-    quantity: float
+    quantity: Quantity
     expected_arrival_date: datetime | None = None
 
 
@@ -2493,7 +2496,7 @@ class CompanyOnOrderCreateIn(BaseModel):
 
     business_unit_id: str
     product_id: str
-    quantity: float
+    quantity: Quantity
     expected_arrival_date: datetime | None = None
 
 
@@ -2503,7 +2506,7 @@ class CompanyAssignmentEditIn(BaseModel):
     MVP-COMPROMISE[C-03]: see `CompanyOnHandEditIn`.
     """
 
-    quantity: float
+    quantity: Quantity
 
 
 class CompanyAssignmentCreateIn(BaseModel):
@@ -2514,7 +2517,7 @@ class CompanyAssignmentCreateIn(BaseModel):
 
     demand_line_id: str
     product_id: str
-    quantity: float
+    quantity: Quantity
 
 
 class CompanyInventoryUploadRowOut(BaseModel):
@@ -3462,5 +3465,5 @@ class SafetyStockListOut(BaseModel):
 
 
 class SafetyStockIn(BaseModel):
-    quantity: float
+    quantity: Quantity
     note: str | None = None

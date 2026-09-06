@@ -13,6 +13,7 @@ from app.engines.executive import (
     executive_summary,
 )
 from app.engines.well_dates import sort_by_earliest_ros, well_dates
+from app.auth.scope import planner_bu
 from app.models import (
     CoverageResult,
     CoverageStatus,
@@ -23,6 +24,7 @@ from app.models import (
     PlanningNode,
     Well,
     Product,
+    Customer,
 )
 from app.schemas import (
     ExecutiveSummaryOut,
@@ -71,17 +73,35 @@ def _impact_out(db: Session, record: ImpactRecord) -> ImpactRecordOut:
 
 
 @router.get("/home", response_model=HomeDashboardOut)
-def home_dashboard(db: Session = Depends(get_db)):
-    recent_changes = (
-        db.query(ImpactRecord).order_by(ImpactRecord.created_at.desc()).limit(20).all()
-    )
-    uncovered_wells = (
+def home_dashboard(
+    db: Session = Depends(get_db), bu_scope: str | None = Depends(planner_bu)
+):
+    # A planner's Home is their Business Unit's Home (review 2026-09-06, F01):
+    # every card below joins out to the customer and filters when scoped.
+    changes_q = db.query(ImpactRecord)
+    if bu_scope is not None:
+        changes_q = (
+            changes_q.join(DemandLine, ImpactRecord.demand_line_id == DemandLine.id)
+            .join(Well, Well.id == DemandLine.well_id)
+            .join(PlanningNode, Well.planning_node_id == PlanningNode.id)
+            .join(Customer, PlanningNode.customer_id == Customer.id)
+            .filter(Customer.business_unit_id == bu_scope)
+        )
+    recent_changes = changes_q.order_by(ImpactRecord.created_at.desc()).limit(20).all()
+    wells_q = (
         db.query(Well)
         .options(
             joinedload(Well.planning_node).joinedload(PlanningNode.customer)
         )
-        .filter(Well.coverage_status == CoverageStatus.UNCOVERED.value).all()
+        .filter(Well.coverage_status == CoverageStatus.UNCOVERED.value)
     )
+    if bu_scope is not None:
+        wells_q = (
+            wells_q.join(PlanningNode, Well.planning_node_id == PlanningNode.id)
+            .join(Customer, PlanningNode.customer_id == Customer.id)
+            .filter(Customer.business_unit_id == bu_scope)
+        )
+    uncovered_wells = wells_q.all()
     # The two dates the uncovered-wells card was unactionable without: when the
     # well first needs steel, and when it first falls short. Batched -- ONE call for
     # every uncovered well, not one per row (see `app.engines.well_dates`), which
@@ -109,8 +129,15 @@ def home_dashboard(db: Session = Depends(get_db)):
         .filter(
             WellSubstitutionApproval.status == SubstitutionApprovalStatus.PENDING
         )
-        .order_by(WellSubstitutionApproval.requested_at.desc())
-        .all()
+    )
+    if bu_scope is not None:
+        pending_requests = (
+            pending_requests.join(PlanningNode, Well.planning_node_id == PlanningNode.id)
+            .join(Customer, PlanningNode.customer_id == Customer.id)
+            .filter(Customer.business_unit_id == bu_scope)
+        )
+    pending_requests = (
+        pending_requests.order_by(WellSubstitutionApproval.requested_at.desc()).all()
     )
     requested_line_ids = {line.id for _a, line, _w in pending_requests}
     # Verdict-driven lines keep the coverage-scope guard they always had: a
@@ -128,8 +155,14 @@ def home_dashboard(db: Session = Depends(get_db)):
                 sorted(effective_profile_filter(db), key=lambda p: p.value)
             ),
         )
-        .all()
     )
+    if bu_scope is not None:
+        verdict_only_lines = (
+            verdict_only_lines.join(PlanningNode, Well.planning_node_id == PlanningNode.id)
+            .join(Customer, PlanningNode.customer_id == Customer.id)
+            .filter(Customer.business_unit_id == bu_scope)
+        )
+    verdict_only_lines = verdict_only_lines.all()
     verdict_only_lines = [
         (line, well)
         for line, well in verdict_only_lines
@@ -232,6 +265,7 @@ def executive_dashboard(
     inventory_utilisation_horizon_months: int = Query(default=12),
     status: list[DemandStatus] | None = Query(default=None),
     profile: list[DemandProfile] | None = Query(default=None),
+    bu_scope: str | None = Depends(planner_bu),
 ):
     """Executive aggregates, for a Business Unit and/or a customer.
 
@@ -276,6 +310,9 @@ def executive_dashboard(
     Supply risk is the coverage engine's own `Unrecoverable` verdict, read rather
     than re-derived, and `first_runout` reuses `app.engines.well_dates`.
     """
+    if business_unit_id is None and bu_scope is not None:
+        # A planner's unscoped request means "my Business Unit", never "all".
+        business_unit_id = bu_scope
     if allocation_horizon_months not in ALLOCATION_HORIZONS:
         raise HTTPException(
             status_code=400,

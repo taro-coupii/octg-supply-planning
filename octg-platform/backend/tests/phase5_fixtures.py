@@ -68,6 +68,8 @@ from datetime import datetime, timedelta
 
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
+
+from app.db import enforce_sqlite_foreign_keys
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -254,11 +256,11 @@ def build_world(session_factory) -> World:
 
 def build_client(with_world: bool = True):
     """(TestClient, session_factory, World|None) over a fresh in-memory sqlite DB."""
-    engine = create_engine(
+    engine = enforce_sqlite_foreign_keys(create_engine(
         "sqlite:///:memory:",
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
-    )
+    ))
     session_factory = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     Base.metadata.create_all(bind=engine)
 

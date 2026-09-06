@@ -424,18 +424,27 @@ def _next_month(year: int, month: int) -> tuple[int, int]:
     return (year + 1, 1) if month == 12 else (year, month + 1)
 
 
-def _included_lines(db: Session, customer_id: str | None = None) -> list[DemandLine]:
+def _included_lines(
+    db: Session, customer_id: str | None = None, business_unit_id: str | None = None
+) -> list[DemandLine]:
     """Demand lines that the coverage engine would have evaluated, i.e. passing
     the same status/profile filters, optionally narrowed to one customer."""
     # The status filter selects WELLS (`Well.demand_status`), so the join to
     # `wells` is unconditional now rather than only present when a customer was
     # named. It removes nothing on its own -- `demand_lines.well_id` is a NOT NULL
     # foreign key.
-    query = db.query(DemandLine).join(Well, DemandLine.well_id == Well.id)
+    query = (
+        db.query(DemandLine)
+        .join(Well, DemandLine.well_id == Well.id)
+        .join(PlanningNode, Well.planning_node_id == PlanningNode.id)
+    )
     if customer_id is not None:
-        query = query.join(
-            PlanningNode, Well.planning_node_id == PlanningNode.id
-        ).filter(PlanningNode.customer_id == customer_id)
+        query = query.filter(PlanningNode.customer_id == customer_id)
+    if business_unit_id is not None:
+        # A planner's system-wide MRP is their Business Unit's MRP (F01).
+        query = query.join(Customer, PlanningNode.customer_id == Customer.id).filter(
+            Customer.business_unit_id == business_unit_id
+        )
     # The platform's CURRENT scope, resolved per call. MRP must recommend against
     # exactly the demand coverage evaluated -- an MRP built from the shipped
     # constant while coverage ran on an adjusted scope would recommend mill orders
@@ -608,13 +617,14 @@ def recommendations_for_lines(
 def mrp_summary(
     db: Session,
     customer_id: str | None = None,
+    business_unit_id: str | None = None,
     today: date | None = None,
 ) -> list[MrpRecommendation]:
     """Layer 1: recommendation rows for every product with unresolved demand.
 
     Ordered by recommended_order_date so the most urgent action is first.
     """
-    unresolved = _unresolved(db, _included_lines(db, customer_id))
+    unresolved = _unresolved(db, _included_lines(db, customer_id, business_unit_id))
     # A line whose product row is gone cannot be recommended for order; it
     # would AttributeError inside is_recoverable. It still surfaces on the
     # Material Order Requirements grid as an unavailable row with its reason,

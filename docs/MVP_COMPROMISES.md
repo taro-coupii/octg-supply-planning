@@ -1,6 +1,6 @@
 # MVP Compromise Register
 
-Last updated: 2026-08-11
+Last updated: 2026-09-06
 
 This platform states eight design principles in `HANDOFF.md` §4.
 **This file is the complete list of the places where those principles were bent
@@ -62,7 +62,9 @@ review; a table row alone leaves the implementer unable to find the code.
 | C-10 | ⚪ | — | **Cross-customer sharing analysis is all-or-nothing.** It does not match production's partial-consumption method |
 | C-11 | ✅ | (process) | **Closed (2026-08-10).** git initialised and pushed to GitHub: branch `octg-supply-planning-platform` of `taro-coupii/Claude-Private` |
 | C-12 | 🔴 | (safety) | **`AUTH_SECRET` has a dev default.** Deploying without setting it makes tokens forgeable. Implementation: `app/auth/tokens.py` |
-| C-13 | 🔴 | ③ the BU is an absolute boundary | **Object-level authorization stops at endpoints that name a customer_id.** Deeper resources such as `/wells/{id}` are only authenticated, so guessing another BU's UUID reads it. List endpoints are not auto-filtered by the planner's BU either. Implementation: `app/auth/deps.py` |
+| C-13 | 🟡 | ③ the BU is an absolute boundary | **Mostly closed 2026-09-06.** `app/auth/scope.py` walks every id in the path, query and JSON body back to its BU and answers 403 with zero writes; lists filter by `planner_bu`; a request naming several resources is refused whole if one is foreign (owner ruling). **What remains: `/mrp/by-item/{product}` and `/mrp/lead-time/{product}`** are product-keyed and the by-item analysis reads every BU's stock — tracked as C-15. Tests: `test_resource_scope_authz.py` / `test_list_scope_authz.py` |
+| C-15 | 🟡 | ③ the BU is an absolute boundary | **`/mrp/by-item/{product_id}` sums every BU's inventory.** The remainder of C-13. Thread `business_unit_id` through `by_item` so a planner sees only their BU's position. Implementation: `by_item` in `app/engines/mrp.py`, `app/api/mrp.py` |
+| C-16 | ⚪ | (authorization) | **Writes left open to planners by owner ruling (2026-09-06):** BU create/rename/delete, customer BU remap and policy, and the manual company-inventory edits and uploads (C-03). `require_admin_for_writes` gates `/admin/*` only. Cross-BU is closed by C-13, so what remains is "a planner may hand-correct the Oracle projection inside their own BU". Implementation: `app/auth/deps.py` |
 | C-14 | 🟡 | (safety) | **`?access_token=` on download links.** `<a href>` navigation cannot carry a header, and the workaround leaves the token in logs and history. Implementation: `app/auth/deps.py`, `withToken` in `frontend/src/auth.ts` |
 
 ---
@@ -81,11 +83,12 @@ review; a table row alone leaves the implementer unable to find the code.
 - **Where**: `app/auth/tokens.py`
 - **In the real implementation**: make `AUTH_SECRET` mandatory at deploy time (refuse to start if unset), or inject it from a secret manager
 
-### C-13 🔴 Object-level authorization not reached
+### C-13 🟡 Object-level authorization — mostly closed 2026-09-06; by-item remains
 
 - **Where**: `app/auth/deps.py`
 - **Today**: authorization stops at an explicitly named customer_id, so (a) `/wells/{id}`, `/scenarios/{id}` and `/demand-lines/{id}/...` never walk from the resource back to a customer/BU, and (b) list endpoints without a customer_id are not auto-filtered by the planner's BU
-- **In the real implementation**: resolve resource → customer → BU in each endpoint (or in the engine layer), and make the authenticated user's BU the default filter on list endpoints
+- **Closed on 2026-09-06**: `enforce_resource_scope` (`app/auth/scope.py`) sits on every protected router and walks every id — customer, business unit, well, demand line, scenario, override, approval, import batch, inventory row, upload, and an override's `target_*` — along the model's own chain to a BU. A foreign row that exists is a 403 **before the handler, with zero writes**; an unknown id falls through to the handler's 404 (existence cannot leak, because a real foreign row is refused first). Lists filter themselves through `planner_bu` (wells / demand lines / scenarios / import batches / approvals / customers / business units / coverage / Home / MRP summary, MOR and export / the default BU on Executive and Surplus). Batch ruling: an import workbook naming one well in another BU is refused whole and nothing is staged
+- **Remaining (C-15)**: `/mrp/by-item` and `/mrp/lead-time` are product-keyed; the by-item inventory position sums every BU → thread a BU argument through `by_item`
 
 ### C-14 🟡 `?access_token=` in download URLs
 

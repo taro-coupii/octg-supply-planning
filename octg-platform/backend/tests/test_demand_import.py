@@ -631,7 +631,17 @@ def test_decisions_are_frozen_after_apply(client_world):
     assert resp.status_code == 409
 
 
-def test_a_deleted_match_target_fails_only_that_row(client_world):
+def test_a_matched_line_cannot_vanish_between_review_and_apply(client_world):
+    """The line an import row was matched to cannot be deleted underneath it.
+
+    This used to delete the matched DemandLine between review and apply and
+    assert that only that row failed. With foreign keys enforced on every
+    connection (F10, 2026-09-06) the import row's match_demand_line_id keeps
+    the line alive: the delete is refused, the batch applies whole, and the
+    "one row fails, the rest apply" path is no longer reachable by this route.
+    """
+    from sqlalchemy.exc import IntegrityError
+
     client, session_factory, w = client_world
     ros = (NOW + timedelta(days=30)).date().isoformat()
     new_ros = (NOW + timedelta(days=45)).date().isoformat()
@@ -646,32 +656,22 @@ def test_a_deleted_match_target_fails_only_that_row(client_world):
     _decide(client, batch["id"], rows[2]["id"], "AcceptRevision")
     _decide(client, batch["id"], rows[3]["id"], "AcceptNew")
 
-    # The matched line disappears between review and apply.
     db = session_factory()
     try:
         cr = db.get(CoverageResult, w.l1_id)
         if cr is not None:
             db.delete(cr)
-        db.query(DemandImportBatch)  # keep the session honest about flush order
         db.delete(db.get(DemandLine, w.l1_id))
-        db.commit()
+        with pytest.raises(IntegrityError):
+            db.commit()
+        db.rollback()
     finally:
         db.close()
 
     result = client.post(f"/demand-imports/{batch['id']}/apply").json()
     assert result["created_count"] == 1
-    assert result["revised_count"] == 0
-    assert len(result["failed_row_ids"]) == 1
-    failed = next(
-        r for r in result["batch"]["rows"] if r["id"] in result["failed_row_ids"]
-    )
-    assert "no longer exists" in failed["apply_error"]
-
-
-# --------------------------------------------------------------------------
-# A `status` cell is a statement about the ROW'S WELL
-# --------------------------------------------------------------------------
-
+    assert result["revised_count"] == 1
+    assert result["failed_row_ids"] == []
 
 def test_two_rows_disagreeing_about_one_wells_status_are_per_row_errors(client_world):
     """A file cannot put one well at two statuses, and it is refused ROW BY ROW.

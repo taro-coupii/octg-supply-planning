@@ -1,9 +1,14 @@
+import math
+
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.engines.inventory import InventoryRowMissing, InventoryScopeMissing
-from app.auth.deps import enforce_customer_scope, get_current_user
+from app.auth.deps import get_current_user, require_admin_for_writes
+from app.auth.scope import enforce_resource_scope
 from app.api import (
     admin,
     auth,
@@ -40,6 +45,34 @@ from app.api import (
 
 app = FastAPI(title="OCTG Supply Readiness Platform")
 
+
+def _json_safe(value):
+    """A validation error must be reportable even when the offending input is not.
+
+    Pydantic refuses `1e309` (inf) and `NaN` because app.quantities.Quantity says
+    allow_inf_nan=False -- correct. But FastAPI's stock 422 handler then echoes
+    the offending `input` back in the error body, json.dumps refuses to encode
+    inf/NaN, and the client sees a 500 instead of the 422 it earned. The review
+    that found this (2026-09-06, F03) had the value stored; the first fix turned
+    "stored" into "crashed", which is not yet "refused with a reason".
+    """
+    if isinstance(value, float) and (math.isnan(value) or math.isinf(value)):
+        return repr(value)
+    if isinstance(value, dict):
+        return {k: _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v) for v in value]
+    return value
+
+
+@app.exception_handler(RequestValidationError)
+async def _validation_error_as_422(_request, exc: RequestValidationError):
+    errors = [
+        {**{k: v for k, v in e.items() if k != "ctx"}, "input": _json_safe(e.get("input"))}
+        for e in exc.errors()
+    ]
+    return JSONResponse(status_code=422, content={"detail": errors})
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173"],
@@ -53,7 +86,7 @@ app.add_middleware(
 # app.auth.deps) cannot be forgotten on a new router. The only router included
 # bare is /auth itself: /auth/login must be reachable logged out.
 # ---------------------------------------------------------------------------
-AUTH_DEPS = [Depends(get_current_user), Depends(enforce_customer_scope)]
+AUTH_DEPS = [Depends(get_current_user), Depends(enforce_resource_scope)]
 
 
 def _include_protected(router):
@@ -86,7 +119,12 @@ _include_protected(company_inventory.router)
 # the platform-wide coverage scope default. Writeable for the same reason
 # customer-owned inventory is -- this platform owns them, Oracle holds no such table,
 # and they used to be editable only by a deploy. See app.api.admin.
-_include_protected(admin.router)
+# The admin router is the one router whose reads and writes have different
+# audiences: every planner screen reads its master data, only an administrator
+# may change it. See app.auth.deps.require_admin_for_writes for the ruling.
+app.include_router(
+    admin.router, dependencies=AUTH_DEPS + [Depends(require_admin_for_writes)]
+)
 
 
 # --------------------------------------------------------------------------

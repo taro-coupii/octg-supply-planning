@@ -77,6 +77,7 @@ from app.engines.customer_admin import (
     apply_customer_config_change,
     parse_allocation_policy,
 )
+from app.auth.scope import planner_bu
 from app.models import (
     BusinessUnit,
     CompanyInventoryUpload,
@@ -102,7 +103,9 @@ router = APIRouter(tags=["customers"])
 
 
 @router.get("/business-units", response_model=list[BusinessUnitOut])
-def list_business_units(db: Session = Depends(get_db)):
+def list_business_units(
+    db: Session = Depends(get_db), bu_scope: str | None = Depends(planner_bu)
+):
     """Business Units -- the outermost inventory boundary.
 
     A BU is a HARD boundary: on-hand quantity belongs to a (BU, product) pair and is
@@ -111,7 +114,10 @@ def list_business_units(db: Session = Depends(get_db)):
     cross-customer sharing analysis, and -- since `PATCH /customers/{id}` -- populate
     the remap picker.
     """
-    return db.query(BusinessUnit).order_by(BusinessUnit.name).all()
+    query = db.query(BusinessUnit)
+    if bu_scope is not None:
+        query = query.filter(BusinessUnit.id == bu_scope)
+    return query.order_by(BusinessUnit.name).all()
 
 
 @router.post("/business-units", response_model=BusinessUnitCreatedOut, status_code=201)
@@ -386,10 +392,15 @@ def delete_business_unit(business_unit_id: str, db: Session = Depends(get_db)):
 
 
 @router.get("/customers", response_model=list[CustomerOut])
-def list_customers(db: Session = Depends(get_db)):
+def list_customers(
+    db: Session = Depends(get_db), bu_scope: str | None = Depends(planner_bu)
+):
     """Customers with the allocation policy their coverage is computed under, so
     the UI can label which model (soft / hard / hybrid) a well is judged by."""
-    return db.query(Customer).order_by(Customer.name).all()
+    query = db.query(Customer)
+    if bu_scope is not None:
+        query = query.filter(Customer.business_unit_id == bu_scope)
+    return query.order_by(Customer.name).all()
 
 
 @router.get("/customers/{customer_id}", response_model=CustomerOut)

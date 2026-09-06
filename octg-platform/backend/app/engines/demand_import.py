@@ -182,6 +182,7 @@ from datetime import date, datetime
 from sqlalchemy.orm import Session
 
 from app.engines.coverage import apply_revision, set_well_demand_status
+from app.quantities import parse_quantity_cell
 from app.models import (
     DemandImportBatch,
     DemandImportBatchStatus,
@@ -288,24 +289,10 @@ def _text(cell: object) -> str | None:
     return text or None
 
 
-def _parse_quantity(cell: object) -> tuple[float | None, str | None]:
-    if cell is None or (isinstance(cell, str) and not cell.strip()):
-        return None, "quantity is empty"
-    if isinstance(cell, bool):
-        return None, f"quantity {cell!r} is not a number"
-    if isinstance(cell, (int, float)):
-        value = float(cell)
-    else:
-        cleaned = str(cell).strip().replace(",", "").replace(" ", "")
-        try:
-            value = float(cleaned)
-        except ValueError:
-            return None, f"quantity {str(cell).strip()!r} is not a number"
-    if value != value or value in (float("inf"), float("-inf")):
-        return None, "quantity is not a finite number"
-    if value <= 0:
-        return None, f"quantity must be greater than zero, got {value:g}"
-    return value, None
+def _parse_quantity(cell: object, *, unit=None) -> tuple[float | None, str | None]:
+    """Demand is > 0 -- a line for nothing is not demand. app.quantities holds
+    the rule, including whole-number-only for PC/JT once the product is known."""
+    return parse_quantity_cell(cell, kind="demand", unit=unit, label="quantity")
 
 
 def _parse_ros(cell: object) -> tuple[datetime | None, str | None]:
@@ -490,7 +477,10 @@ def parse_and_stage(
             if item.product is None:
                 problems.append(f"unknown product {raw['product']!r}")
 
-        item.quantity, err = _parse_quantity(cell_at("quantity"))
+        item.quantity, err = _parse_quantity(
+            cell_at("quantity"),
+            unit=item.product.unit_of_measure if item.product else None,
+        )
         if err:
             problems.append(err)
         item.ros_date, err = _parse_ros(cell_at("ros_date"))

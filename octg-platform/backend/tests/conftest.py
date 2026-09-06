@@ -4,6 +4,8 @@ os.environ["DATABASE_URL"] = "sqlite:///:memory:"
 
 import pytest
 from sqlalchemy import create_engine
+
+from app.db import enforce_sqlite_foreign_keys
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -39,11 +41,11 @@ def _authenticated_as_admin():
 
 @pytest.fixture()
 def db_session():
-    engine = create_engine(
+    engine = enforce_sqlite_foreign_keys(create_engine(
         "sqlite:///:memory:",
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
-    )
+    ))
     TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     Base.metadata.create_all(bind=engine)
 

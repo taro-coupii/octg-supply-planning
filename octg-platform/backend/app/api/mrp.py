@@ -6,6 +6,7 @@ from app.engines.lead_time import resolve_lead_time
 from app.engines.mor import DEFAULT_HORIZON_MONTHS, order_requirements
 from app.engines.mrp import by_item, mrp_summary
 from app.engines.mrp_export import build_mrp_export
+from app.auth.scope import planner_bu
 from app.models import Customer, Product
 from app.schemas import (
     ByItemAnalysisOut,
@@ -35,6 +36,7 @@ def export_mrp(
         ),
     ),
     db: Session = Depends(get_db),
+    bu_scope: str | None = Depends(planner_bu),
 ):
     """Download the MRP as an .xlsx: summary on tab 1, justification on tabs 2+.
 
@@ -58,7 +60,7 @@ def export_mrp(
                 status_code=404, detail=f"Customer {customer_id!r} not found"
             )
 
-    export = build_mrp_export(db, customer=customer)
+    export = build_mrp_export(db, customer=customer, business_unit_id=bu_scope)
     return Response(
         content=export.content,
         media_type=XLSX_MEDIA_TYPE,
@@ -80,11 +82,17 @@ def export_mrp(
 
 
 @router.get("/summary", response_model=list[MrpRecommendationOut])
-def get_mrp_summary(customer_id: str | None = None, db: Session = Depends(get_db)):
-    """MRP Layer 1: products needing procurement, most urgent order date first."""
+def get_mrp_summary(
+    customer_id: str | None = None,
+    db: Session = Depends(get_db),
+    bu_scope: str | None = Depends(planner_bu),
+):
+    """MRP Layer 1: products needing procurement, most urgent order date first.
+
+    System-wide by default; for a planner, "the system" is their Business Unit."""
     return [
         MrpRecommendationOut.model_validate(r, from_attributes=True)
-        for r in mrp_summary(db, customer_id=customer_id)
+        for r in mrp_summary(db, customer_id=customer_id, business_unit_id=bu_scope)
     ]
 
 
@@ -128,6 +136,7 @@ def get_order_requirements(
     customer_id: str | None = None,
     horizon_months: int = Query(default=DEFAULT_HORIZON_MONTHS, ge=3, le=36),
     db: Session = Depends(get_db),
+    bu_scope: str | None = Depends(planner_bu),
 ):
     """The monthly Material Order Requirements grid -- see app.engines.mor.
 
@@ -137,6 +146,9 @@ def get_order_requirements(
     if customer_id is not None and db.get(Customer, customer_id) is None:
         raise HTTPException(status_code=404, detail="Customer not found")
     return order_requirements(
-        db, customer_id=customer_id, horizon_months=horizon_months
+        db,
+        customer_id=customer_id,
+        business_unit_id=bu_scope,
+        horizon_months=horizon_months
     )
 

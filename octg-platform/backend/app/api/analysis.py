@@ -18,6 +18,7 @@ from app.engines.coverage_scope import (
 from app.engines.coverage_view import scoped_verdicts
 from app.engines.sharing import cross_customer_sharing
 from app.engines.surplus import surplus_report
+from app.auth.scope import planner_bu
 from app.models import BusinessUnit, Customer, DemandProfile, DemandStatus
 from app.schemas import CrossCustomerSharingOut, SurplusReportOut
 
@@ -49,6 +50,7 @@ def get_surplus(
     status: list[DemandStatus] | None = Query(default=None),
     profile: list[DemandProfile] | None = Query(default=None),
     db: Session = Depends(get_db),
+    bu_scope: str | None = Depends(planner_bu),
 ):
     """The Surplus List: on-hand decomposed into allocated / surplus /
     obsolete per (BU, product). Read-only; quantity-based -- see
@@ -59,6 +61,8 @@ def get_surplus(
     a read-only recompute (scoped_verdicts) and is labelled as such in the
     payload -- widening to Planned/Budgeted shows how much of today's surplus
     the future programme would absorb."""
+    if business_unit_id is None and bu_scope is not None:
+        business_unit_id = bu_scope
     # An unknown BU id is a 404, not an empty 200: an empty surplus report
     # reads as "no idle steel", which is a claim, not an absence of one.
     if business_unit_id is not None and db.get(BusinessUnit, business_unit_id) is None:
