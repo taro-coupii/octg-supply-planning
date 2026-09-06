@@ -4,7 +4,7 @@ Deliberately a separate module from `app.engines.scenario`
 --------------------------------------------------------
 `app.engines.scenario` is a read-only projection and its first line of defence is
 that it does not import anything that persists (layer 1 of the same four-layer
-pattern `app.engines.sharing` uses). That guarantee is only worth something if it
+pattern the surplus report uses). That guarantee is only worth something if it
 is structural, and it stops being structural the moment `apply_revision` appears
 among the preview module's imports -- after which "the preview cannot write" rests
 on nobody calling the wrong function.
@@ -42,6 +42,7 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 
 from app.engines.coverage import (
+    recompute_business_unit,
     apply_revision,
     recompute_customer,
     set_well_demand_status,
@@ -152,7 +153,7 @@ def apply_to_base_plan(
             + "\n  - ".join(blockers)
         )
 
-    customer = scenario.customer
+    business_unit = scenario.business_unit
 
     # The promise, computed BEFORE anything is written and by the same code the
     # editor showed the planner. Kept so the notes can state what was expected;
@@ -161,7 +162,7 @@ def apply_to_base_plan(
     # rather than something a runtime guard could sensibly recover from.
     promised = preview(db, scenario)
 
-    resolver = ScenarioOverrides(scenario.overrides, customer)
+    resolver = ScenarioOverrides(scenario.overrides, business_unit)
     notes: list[str] = []
 
     # ---- 1. Substitution approvals ---------------------------------------
@@ -322,7 +323,13 @@ def apply_to_base_plan(
     # otherwise never trigger one, and a scenario with no applicable overrides at
     # all still deserves a consistent answer. Recompute is idempotent, so the
     # extra pass costs a pass and buys the guarantee.
-    computed = recompute_customer(db, customer)
+    # BU-WIDE, matching the preview. `apply_revision` already recomputes each
+    # revised line's Business Unit, but a scenario whose only overrides were
+    # substitution approvals would otherwise never trigger one, and the promise the
+    # preview made covers every customer of the pool -- so the answer this returns
+    # has to cover the same set or "the promise was kept" would be a comparison of
+    # two different scopes (D01).
+    computed = recompute_business_unit(db, business_unit)
 
     applied_at = datetime.utcnow()
     scenario.status = ScenarioStatus.APPLIED

@@ -1,10 +1,17 @@
-"""Analysis endpoints -- read-only what-if projections.
+"""Analysis endpoints -- read-only projections.
 
-Nothing under this router mutates state. In particular the cross-customer
-sharing route deliberately does NOT call `db.commit()`: the analysis writes
-nothing (see app.engines.sharing for the four mechanisms enforcing that), so
-there is nothing to commit and no path by which a GET could overwrite the
-official coverage answer.
+Nothing under this router mutates state. The surplus report reads stored
+verdicts (or, for a non-default scope, a recompute that is rolled back -- see
+`app.engines.coverage_view.scoped_verdicts`), so there is nothing to commit and
+no path by which a GET could overwrite the official coverage answer.
+
+The cross-customer sharing what-if used to live here. It answered "could this
+customer's uncovered demand be covered from a neighbour's surplus?", which was a
+question worth asking only while coverage was allocated per customer: since the
+product owner's ruling of 2026-09-06 (D01) the Business Unit's pool is divided
+across its customers together, so any surplus has already gone to whoever needed
+it soonest and the answer is always "no, and here is the verdict that says so".
+Retired rather than left as a screen that could only ever agree with itself.
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -16,33 +23,13 @@ from app.engines.coverage_scope import (
     effective_status_filter,
 )
 from app.engines.coverage_view import scoped_verdicts
-from app.engines.sharing import cross_customer_sharing
 from app.engines.surplus import surplus_report
 from app.auth.scope import planner_bu
 from app.models import BusinessUnit, Customer, DemandProfile, DemandStatus
-from app.schemas import CrossCustomerSharingOut, SurplusReportOut
+from app.schemas import SurplusReportOut
 
 router = APIRouter(prefix="/analysis", tags=["analysis"])
 
-
-@router.get("/cross-customer-sharing", response_model=CrossCustomerSharingOut)
-def get_cross_customer_sharing(customer_id: str, db: Session = Depends(get_db)):
-    """Which of this customer's UNCOVERED demand could BU-level sharing cover?
-
-    A read-only what-if. The official coverage verdict remains customer-scoped
-    and is untouched by this call. Sharing is evaluated within the customer's
-    Business Unit only -- stock in any other BU is never offered, whatever its
-    quantity -- and only genuine surplus (what is left after every customer in
-    the BU has taken its own committed quantity) is on the table.
-
-    A customer with no Business Unit mapped is treated as isolated: the response
-    is empty and `notes` explains why.
-    """
-    customer = db.get(Customer, customer_id)
-    if customer is None:
-        raise HTTPException(status_code=404, detail="Customer not found")
-    analysis = cross_customer_sharing(db, customer)
-    return CrossCustomerSharingOut.model_validate(analysis, from_attributes=True)
 
 @router.get("/surplus", response_model=SurplusReportOut)
 def get_surplus(

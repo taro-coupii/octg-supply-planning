@@ -50,7 +50,7 @@ two fields here change WHICH POOL the pass reads and HOW it is divided:
                       `InventoryOnHand` / `InventoryOnOrder` resolution, the
                       `InventoryAssignment` netting scope
                       (`app.engines.inventory.scoped_customer_ids`) and the
-                      cross-customer sharing analysis all key on the BU. The
+                      and the customers it is pooled across all key on the BU. The
                       boundary is absolute and never crossed by any code path, so a
                       remap is not a relabelling: it is a different warehouse.
 
@@ -137,7 +137,7 @@ quantity, independently, so moving one in or out changes no other customer's sto
 verdict.
 
 The one thing a remap DOES change for a neighbour is the read-only
-`app.engines.sharing` what-if, which defines surplus across a whole BU. It writes
+`app.engines.surplus` report, which defines surplus across a whole BU. It writes
 nothing and is computed on demand, so there is nothing to repair -- the next read is
 already correct.
 """

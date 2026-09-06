@@ -197,13 +197,12 @@ def apply_lead_time_change(
     wells = db.query(Well).all()
     coverage_before = {well.id: (well.name, well.coverage_status) for well in wells}
 
-    customers = db.query(Customer).all()
-    for customer in customers:
-        # No explicit filters: the platform's CURRENT coverage scope is what the
-        # official verdict must be computed under. See app.engines.coverage_scope.
-        from app.engines.coverage import recompute_customer
+    # ONE pass per Business Unit, which is the unit of allocation (D01). No explicit
+    # filters: the platform's CURRENT coverage scope is what the official verdict
+    # must be computed under. See app.engines.coverage_scope.
+    from app.engines.coverage import recompute_all_business_units
 
-        recompute_customer(db, customer)
+    sweep = recompute_all_business_units(db)
     db.flush()
 
     well_changes: list[WellCoverageChange] = []
@@ -223,6 +222,6 @@ def apply_lead_time_change(
     return LeadTimeChangeImpact(
         products_examined=len(products),
         product_changes=tuple(product_changes),
-        recomputed_customer_ids=tuple(sorted(c.id for c in customers)),
+        recomputed_customer_ids=tuple(sorted(sweep.recomputed_customer_ids)),
         well_changes=tuple(well_changes),
     )

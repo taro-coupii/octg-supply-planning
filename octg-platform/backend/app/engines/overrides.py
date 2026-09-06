@@ -10,7 +10,7 @@ uses. There were two ways to get there:
       a second copy of the allocation ordering, the substitution fall-through,
       the shortage wording and the well rollup, and the moment the two drift the
       preview starts lying -- confidently, and about the one thing planners are
-      using it to decide. (app.engines.sharing gets away with a narrow
+      using it to decide. (The surplus report gets away with a narrow
       re-derivation because it deliberately answers a much smaller question and
       says so; a scenario preview cannot.)
 
@@ -223,7 +223,7 @@ class OverrideError(ValueError):
     """An override that is not a legal override. Raised by `validate`."""
 
 
-def validate(override, scenario_customer) -> None:
+def validate(override, scenario_bu) -> None:
     """Reject an override that is malformed, mistargeted, or crosses a BU.
 
     The single authority on override legality -- see
@@ -232,9 +232,9 @@ def validate(override, scenario_customer) -> None:
     override is persisted, and again by the resolver when one is read, so a row
     written by an older build cannot quietly change coverage.
 
-    `scenario_customer` is the Customer the scenario belongs to. It is needed for
-    the ONE rule that is not about shape: an INVENTORY override may only touch
-    that customer's own Business Unit.
+    `scenario_bu` is the BusinessUnit the scenario belongs to. It is needed for
+    the ONE rule that is not about shape: an INVENTORY override may only touch the
+    scenario's own Business Unit.
     """
     kind = override.target_kind
     fields = OVERRIDE_FIELDS.get(kind)
@@ -295,7 +295,7 @@ def validate(override, scenario_customer) -> None:
                 "is not a what-if; to model removing supply, there is nothing to "
                 "remove -- this override only ever ADDS to the projection."
             )
-        _assert_new_order_target(override, scenario_customer)
+        _assert_new_order_target(override, scenario_bu)
         return
 
     if kinds_of_value[expected] is None:
@@ -345,7 +345,7 @@ def validate(override, scenario_customer) -> None:
     elif kind == ScenarioTargetKind.INVENTORY:
         if override.target_product_id is None:
             raise OverrideError("An inventory override must name a product.")
-        _assert_same_bu(override, scenario_customer)
+        _assert_same_bu(override, scenario_bu)
 
     elif kind == ScenarioTargetKind.PO_ARRIVAL:
         if override.target_product_id is None:
@@ -371,7 +371,7 @@ def validate(override, scenario_customer) -> None:
             )
 
 
-def _assert_new_order_target(override, scenario_customer) -> None:
+def _assert_new_order_target(override, scenario_bu) -> None:
     """A hypothetical new order is scoped to (Business Unit, product).
 
     The SAME scope a real `app.models.inventory_on_order.InventoryOnOrder` row has,
@@ -405,56 +405,41 @@ def _assert_new_order_target(override, scenario_customer) -> None:
             "for a product -- and naming one would imply an allocation that does "
             "not exist."
         )
-    _assert_same_bu(override, scenario_customer, what="hypothetical new-order override")
+    _assert_same_bu(override, scenario_bu, what="hypothetical new-order override")
 
 
-def _assert_same_bu(override, scenario_customer, what: str = "inventory override") -> None:
-    """A supply override may not reach outside the scenario customer's BU.
+def _assert_same_bu(override, scenario_bu, what: str = "inventory override") -> None:
+    """A supply override may not reach outside the scenario's own Business Unit.
 
     The Business Unit is the outermost inventory boundary and it is never crossed
     by anything (see app.models.business_unit.BusinessUnit). A scenario is not an
     exception: "what if BU Gulf lent us its stock" is not a supply override, it is
-    a different question, and the platform's answer to it is the read-only
-    cross-customer sharing analysis -- which is itself intra-BU.
+    a different question, and this platform has no answer to it.
 
     Refusing here rather than clamping at read time is deliberate: a clamped
     override would sit in the scenario looking as though it had been taken into
     account.
     """
     declared = override.target_business_unit_id
-    own = scenario_customer.business_unit_id
+    own = scenario_bu.id if scenario_bu is not None else None
 
     if own is None:
-        # An unmapped customer has NO inventory pool: on-hand exists only per
-        # (Business Unit, product), and the legacy unscoped quantity an override
-        # could once have restated is gone. So there is nothing to override
-        # whether a BU is named or not, and both forms are refused. Refusing at
-        # creation is better than letting the override sit in the scenario looking
-        # accounted-for, only for the preview to raise InventoryScopeMissing.
         raise OverrideError(
-            f"Customer {scenario_customer.name!r} is not mapped to a Business "
-            f"Unit, so it has no inventory pool and an {what} has "
-            "nothing to apply to"
-            + (
-                f" (it named BU {declared!r})."
-                if declared is not None
-                else ". Map the customer to a Business Unit first."
-            )
+            f"This scenario has no Business Unit, so it has no inventory pool and "
+            f"an {what} has nothing to apply to"
+            + (f" (it named BU {declared!r})." if declared is not None else ".")
         )
 
     if declared is None:
         raise OverrideError(
             f"An {what} must state the Business Unit it applies to "
-            f"(expected {own!r}, the scenario customer's own BU)."
+            f"(expected {own!r}, the scenario's own BU)."
         )
     if declared != own:
         raise OverrideError(
             f"Refusing an {what} for Business Unit {declared!r}: "
-            f"scenario customer {scenario_customer.name!r} belongs to BU {own!r}. "
-            "The Business Unit is a hard inventory boundary and a scenario may "
-            "not reach across it. To ask whether another party's stock could "
-            "help, use the cross-customer sharing analysis (which is itself "
-            "restricted to one BU)."
+            f"this scenario belongs to BU {own!r}. The Business Unit is a hard "
+            "inventory boundary and a scenario may not reach across it."
         )
 
 
@@ -678,7 +663,7 @@ class ScenarioOverrides(OverrideResolver):
     cross-BU inventory override or a nonsense field into a coverage pass.
     """
 
-    def __init__(self, overrides, scenario_customer):
+    def __init__(self, overrides, scenario_bu):
         self._demand: dict[str, dict[str, object]] = {}
         #: {well_id: DemandStatus} from WELL overrides. Keyed by WELL, so every
         #: line of that well is seen at the overridden status and the preview
@@ -712,7 +697,7 @@ class ScenarioOverrides(OverrideResolver):
         unmodelled = []
 
         for override in overrides:
-            validate(override, scenario_customer)
+            validate(override, scenario_bu)
             kind = override.target_kind
 
             if kind in UNMODELLED_KINDS:

@@ -294,8 +294,16 @@ def test_recompute_rewrites_the_stored_verdict_after_an_out_of_band_change(
     assert customer.id
 
 
-def test_recompute_can_be_scoped_to_one_customer(client, db_session):
-    """Naming a customer must not touch anybody else's stored verdict."""
+def test_naming_one_customer_recomputes_its_whole_business_unit(client, db_session):
+    """Naming a customer recomputes the pool it shares.
+
+    This asserted the opposite until 2026-09-06: a scoped recompute touched only
+    the named customer, which was coherent while each customer was allocated on its
+    own. Since the Business Unit became the unit of allocation (D01) that would
+    leave the neighbours holding verdicts decided against a division of the steel
+    this pass has just replaced -- so the recompute widens, and the response says
+    how far it went.
+    """
     bu, customer, _, product = _world(db_session)
 
     other = Customer(
@@ -332,8 +340,10 @@ def test_recompute_can_be_scoped_to_one_customer(client, db_session):
 
     res = client.post("/coverage/recompute", json={"customer_id": customer.id})
     assert res.status_code == 200, res.text
-    assert res.json()["computed_customers"] == 1
-    assert res.json()["computed_lines"] == 1
+    # Both customers of the Business Unit, and both their lines.
+    assert res.json()["computed_customers"] == 2
+    assert res.json()["computed_lines"] == 2
+    assert "whole Business Unit" in res.json()["note"]
 
 
 def test_recompute_for_an_unknown_customer_is_a_404(client, db_session):

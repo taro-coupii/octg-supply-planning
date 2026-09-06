@@ -50,6 +50,7 @@ from app.quantities import InvalidQuantity, validate_quantity
 from app.auth.scope import planner_bu
 from app.models import (
     User,
+    BusinessUnit,
     Customer,
     DemandLine,
     EDITABLE_SCENARIO_STATUSES,
@@ -120,8 +121,10 @@ def _summary(
         id=scenario.id,
         name=scenario.name,
         description=scenario.description,
-        customer_id=scenario.customer_id,
-        customer_name=scenario.customer.name,
+        business_unit_id=scenario.business_unit_id,
+        business_unit_name=(
+            scenario.business_unit.name if scenario.business_unit else None
+        ),
         status=scenario.status,
         created_by=scenario.created_by,
         created_by_user_id=scenario.created_by_user_id,
@@ -174,23 +177,21 @@ def get_override_fields():
 
 @router.get("", response_model=list[ScenarioSummaryOut])
 def list_scenarios(
-    customer_id: str | None = None,
+    business_unit_id: str | None = None,
     include_delta: bool = True,
     db: Session = Depends(get_db),
     bu_scope: str | None = Depends(planner_bu),
 ):
-    """Every scenario, newest first, optionally narrowed to one customer.
+    """Every scenario, newest first, optionally narrowed to one Business Unit.
 
     SHARED: no filtering by user, ever. `include_delta=false` skips the per-row
     preview for callers that only need the metadata.
     """
     query = db.query(Scenario)
     if bu_scope is not None:
-        query = query.join(Customer, Scenario.customer_id == Customer.id).filter(
-            Customer.business_unit_id == bu_scope
-        )
-    if customer_id is not None:
-        query = query.filter(Scenario.customer_id == customer_id)
+        query = query.filter(Scenario.business_unit_id == bu_scope)
+    if business_unit_id is not None:
+        query = query.filter(Scenario.business_unit_id == business_unit_id)
     scenarios = query.order_by(Scenario.created_at.desc()).all()
     return [_summary(db, s, with_delta=include_delta) for s in scenarios]
 
@@ -199,15 +200,19 @@ def list_scenarios(
 def create_scenario(body: ScenarioIn, db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """Create a Draft scenario against one customer."""
-    customer = db.get(Customer, body.customer_id)
-    if customer is None:
-        raise HTTPException(status_code=404, detail="Customer not found")
+    """Create a Draft scenario against one Business Unit.
+
+    The Business Unit is the scope coverage is allocated at (D01), so it is the
+    only scope a scenario can honestly be previewed and applied at.
+    """
+    business_unit = db.get(BusinessUnit, body.business_unit_id)
+    if business_unit is None:
+        raise HTTPException(status_code=404, detail="Business Unit not found")
 
     scenario = Scenario(
         name=body.name,
         description=body.description,
-        customer_id=customer.id,
+        business_unit_id=business_unit.id,
         status=ScenarioStatus.DRAFT,
         created_by=body.created_by,
         created_by_user_id=user.id,
@@ -345,7 +350,7 @@ def add_override(
     )
 
     try:
-        validate(override, scenario.customer)
+        validate(override, scenario.business_unit)
         _check_override_quantity(db, override)
         assert_target_in_scope(db, scenario, override)
     except (OverrideError, ValueError) as exc:

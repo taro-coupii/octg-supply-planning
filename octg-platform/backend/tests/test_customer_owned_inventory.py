@@ -28,7 +28,11 @@ import pytest
 from openpyxl import Workbook
 
 from app.engines.allocation import allocate_detailed
-from app.engines.coverage import compute_customer_coverage, recompute_customer
+from app.engines.coverage import (
+    compute_customer_coverage,
+    recompute_business_unit,
+    recompute_customer,
+)
 from app.engines.customer_owned_import import (
     CustomerOwnedImportError,
     parse_and_replace,
@@ -38,7 +42,6 @@ from app.engines.inventory import (
     on_hand_map,
     ownership_pool_for,
 )
-from app.engines.sharing import cross_customer_sharing
 from app.models import (
     AllocationPolicy,
     BusinessUnit,
@@ -448,19 +451,20 @@ def test_mrp_reports_the_two_ownership_tiers_separately(db_session):
 # ---------------------------------------------------------------------------
 
 
-def test_a_customers_own_uploaded_stock_is_never_offered_to_a_neighbour(db_session):
-    """Genuine surplus of the customer's OWN material, and still not shareable.
+def test_a_customers_own_uploaded_stock_is_never_drawn_by_a_neighbour(db_session):
+    """THE OWNERSHIP WALL, pinned against the pass that shares the pool.
 
-    The setup is deliberately the most tempting possible: the donor owns 10 000 of a
-    product it has no demand for at all, so by every other definition in this module
-    that quantity is idle surplus sitting inside the same Business Unit as a customer
-    who is short of exactly it. The company holds an explicit ZERO.
+    The setup is deliberately the most tempting possible: the donor owns 10,000 of
+    a product it has no demand for at all, so by every other definition that
+    quantity is idle material sitting inside the same Business Unit as a customer
+    short of exactly it. The company holds an explicit ZERO.
 
-    It must still not be offered. It is the donor's PROPERTY, not the company's, and
-    proposing to move it would propose moving something we do not own -- a boundary
-    tighter than the Business Unit boundary. Both directions are covered by the same
-    assertion: `shareable` is 0, so nothing is offered TO the needy customer, and
-    nothing of the needy customer's own would be offered away either.
+    It must still not be drawn. It is the donor's PROPERTY, not the company's, and
+    allocating it would allocate something we do not own -- a boundary tighter
+    than the Business Unit boundary, and one that matters MORE now that the
+    company pool is genuinely shared across customers (D01). Expressed through the
+    cross-customer sharing what-if until that analysis was retired; the hazard is
+    the same and this is where it lives.
     """
     bu = _bu(db_session)
     donor, donor_node = _customer(db_session, bu, "Donor Co")
@@ -470,43 +474,33 @@ def test_a_customers_own_uploaded_stock_is_never_offered_to_a_neighbour(db_sessi
     _owns(db_session, donor, product, 10_000)
 
     needy_well = _well(db_session, needy_node, "WELL-NEEDY")
-    _line(db_session, needy_well, product, 4000, days_out=200)
-    recompute_customer(db_session, needy)
+    line = _line(db_session, needy_well, product, 4000, days_out=200)
+    recompute_business_unit(db_session, bu)
 
-    analysis = cross_customer_sharing(db_session, needy)
+    db_session.expire(line, ["coverage_result"])
+    result = line.coverage_result
+    assert result.status != CoverageStatus.COVERED
+    # Nothing was drawn from ANY tier: the company holds none and the donor's
+    # 10,000 is not company stock.
+    assert result.drawn_company == 0.0
+    assert result.drawn_customer_owned == 0.0
+    assert result.residual == 4000.0
 
-    (surplus,) = [s for s in analysis.product_surplus if s.product_id == product.id]
-    # The company holds none, so there is no surplus -- the donor's 10 000 is invisible
-    # to this arithmetic by construction, not by a filter.
-    assert surplus.bu_on_hand == 0.0
-    assert surplus.shareable == 0.0
-
-    (outcome,) = [
-        line for line in analysis.uncovered_lines if line.product_id == product.id
-    ]
-    assert outcome.would_be_covered is False
-    assert outcome.shared_quantity == 0.0
-    assert outcome.contributions == ()
-    assert donor.id not in {c.from_customer_id for c in outcome.contributions}
-
-    # The reason is stated in the payload a planner reads, not only in the code.
-    assert any("CUSTOMER-OWNED" in note for note in analysis.notes)
-
-    # And the structural fact behind it: the company on-hand resolver never sees the
-    # customer-owned quantity at all.
+    # And the structural fact behind it: the company on-hand resolver never sees
+    # the customer-owned quantity at all.
     assert on_hand_map(db_session, bu.id, {product.id}) == {product.id: 0.0}
 
 
-def test_own_stock_covering_own_demand_frees_company_steel_rather_than_leaking(
+def test_own_stock_covering_own_demand_frees_company_steel_for_a_neighbour(
     db_session,
 ):
     """The correct second-order effect, pinned so nobody "fixes" it.
 
-    A customer that covers its lines from its OWN material draws less company steel,
-    so its committed quantity falls and the BU's shareable surplus RISES. That is not
-    a leak -- the company steel it did not need is genuinely free, and saying so is
-    the honest answer. What must never happen is the customer's own material being
-    counted INTO that surplus, which the bound `shareable <= bu_on_hand` excludes.
+    A customer that covers its lines from its OWN material draws less company
+    steel, so the company steel it did not need is genuinely free -- and since the
+    pool is divided across the Business Unit (D01), a neighbour actually gets it.
+    That is not a leak: what must never happen is the customer's own material
+    being drawn by anybody else, which the tier keying makes impossible.
     """
     bu = _bu(db_session)
     self_sufficient, ss_node = _customer(db_session, bu, "Self Sufficient Co")
@@ -515,22 +509,22 @@ def test_own_stock_covering_own_demand_frees_company_steel_rather_than_leaking(
     _stock(db_session, bu, product, 5000)
     _owns(db_session, self_sufficient, product, 5000)
 
-    _line(db_session, _well(db_session, ss_node, "WELL-SS"), product, 5000, 150)
-    _line(db_session, _well(db_session, needy_node, "WELL-N2"), product, 4000, 200)
-    recompute_customer(db_session, self_sufficient)
-    recompute_customer(db_session, needy)
+    ss_line = _line(db_session, _well(db_session, ss_node, "WELL-SS"), product, 5000, 150)
+    needy_line = _line(
+        db_session, _well(db_session, needy_node, "WELL-N2"), product, 4000, 200
+    )
+    recompute_business_unit(db_session, bu)
 
-    analysis = cross_customer_sharing(db_session, needy)
-    (surplus,) = [s for s in analysis.product_surplus if s.product_id == product.id]
-
-    # The self-sufficient customer used its own steel, so it committed NO company
-    # steel and the whole 5000 is genuinely surplus.
-    assert surplus.bu_on_hand == 5000.0
-    assert surplus.committed_in_bu == 4000.0  # only the needy customer's own draw
-    assert surplus.shareable == 1000.0
-    # THE BOUND: surplus is company stock only. 10 000 exists in the BU across both
-    # tiers, and not one metre of the customer-owned half reached this figure.
-    assert surplus.shareable <= surplus.bu_on_hand
+    db_session.expire(ss_line, ["coverage_result"])
+    db_session.expire(needy_line, ["coverage_result"])
+    # The earlier line took its own steel and none of the company's.
+    assert ss_line.coverage_result.status == CoverageStatus.COVERED
+    assert ss_line.coverage_result.drawn_customer_owned == 5000.0
+    assert ss_line.coverage_result.drawn_company == 0.0
+    # So the company's 5000 was there for the neighbour.
+    assert needy_line.coverage_result.status == CoverageStatus.COVERED
+    assert needy_line.coverage_result.drawn_company == 4000.0
+    assert needy_line.coverage_result.drawn_customer_owned == 0.0
 
 
 # ---------------------------------------------------------------------------

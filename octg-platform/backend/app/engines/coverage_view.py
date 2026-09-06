@@ -38,7 +38,7 @@ The engine only ever `flush()`es; it never commits. So the projection:
      assigned in Python and would otherwise survive the rollback);
   5. asserts the session is clean afterwards, as a tripwire for future edits.
 
-This deliberately mirrors the guarantees of `app.engines.sharing` (values in,
+This deliberately mirrors the guarantees of `app.engines.scenario` (values in,
 values out, nothing persisted, tripwire on top) while reusing the production
 engine instead of re-deriving coverage. The trade-off is honest: a non-default
 request costs a full recompute, and the route that calls it must be a GET that

@@ -29,7 +29,7 @@ import SafetyStockPanel from "./admin/SafetyStockPanel";
  *
  *   * the Business Unit is the HARD inventory boundary. Stock in another BU is
  *     never offered to this one, whatever its quantity — not by coverage, not by
- *     substitution, not even by the cross-customer sharing what-if.
+ *     substitution. Inside a BU it is pooled across every customer below.
  *   * the allocation policy decides HOW that customer's coverage is judged.
  *
  * EVERY EDIT BELOW IS CONSEQUENTIAL, AND THE SERVER SAYS SO

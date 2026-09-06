@@ -97,7 +97,7 @@ def bu_of_demand_line(db: Session, line_id: str):
 
 def bu_of_scenario(db: Session, scenario_id: str):
     s = db.get(Scenario, scenario_id)
-    return UNKNOWN if s is None else bu_of_customer(db, s.customer_id)
+    return UNKNOWN if s is None else (s.business_unit_id or UNKNOWN)
 
 
 def bu_of_override(db: Session, override_id: str):

@@ -4,7 +4,7 @@ This module owns the two filters that decide which demand
 `app.engines.coverage` evaluates at all. It exists as a module of its own -- rather
 than as more code in `app.engines.coverage` -- because `app.api.wells`,
 `app.api.demand`, `app.api.dashboard`, `app.engines.mrp`, `app.engines.executive`,
-`app.engines.well_dates`, `app.engines.sharing` and `app.engines.coverage_view` all
+`app.engines.well_dates` and `app.engines.coverage_view` all
 need to resolve the scope, and importing the whole coverage engine to ask "which
 statuses are in scope" would tie eight modules to it for one fact.
 
@@ -500,7 +500,7 @@ def set_coverage_scope_defaults(
     # imports keep working), so a module-level import back into it would be a cycle.
     # This is the only direction that needs breaking and it needs breaking in exactly
     # one function.
-    from app.engines.coverage import recompute_customer
+    from app.engines.coverage import recompute_all_business_units
 
     before = coverage_scope(db)
     requested_status = set(status_filter)
@@ -575,9 +575,7 @@ def set_coverage_scope_defaults(
     # `recompute_customer` -- which is why the row is written first and the recompute
     # passes no explicit filters. Passing them explicitly would work today and would
     # silently stop tracking the setting the moment a caller forgot.
-    customers = db.query(Customer).all()
-    for customer in customers:
-        recompute_customer(db, customer)
+    sweep = recompute_all_business_units(db)
     db.flush()
 
     changes: list[WellVerdictChange] = []
@@ -600,7 +598,7 @@ def set_coverage_scope_defaults(
         status_filter_after=status_after,
         profile_filter_after=profile_after,
         unchanged=False,
-        recomputed_customer_ids=tuple(sorted(c.id for c in customers)),
+        recomputed_customer_ids=tuple(sorted(sweep.recomputed_customer_ids)),
         recomputed_well_count=len(wells),
         well_changes=tuple(changes),
     )

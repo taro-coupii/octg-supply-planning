@@ -81,7 +81,7 @@ Oracle-owned domain, and absence in a projection is silence rather than zero:
 UNITS: the only place in the platform that genuinely aggregates ACROSS PRODUCTS
 ------------------------------------------------------------------------------
 Every other quantity-bearing payload concerns one product, so one unit labels it
-(`app.engines.mrp.MrpRecommendation`, `app.engines.sharing.ProductSurplus`). This
+(`app.engines.mrp.MrpRecommendation`, `app.engines.surplus.ProductSurplus`). This
 module is the exception: demand trend, quantity coverage, supply risk, the
 soft-allocation channels and incoming supply all sum quantities over whatever mix
 of products happens to be in scope. Since a

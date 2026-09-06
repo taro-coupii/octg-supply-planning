@@ -223,8 +223,15 @@ def _line(db, well, product, quantity, days_out=FAR_ROS_DAYS):
 
 
 def _scenario(db, customer, name="What if"):
+    """A scenario for the CUSTOMER'S BUSINESS UNIT.
+
+    The argument is still a customer because that is what every call site has to
+    hand and what the worlds are built around; a scenario is scoped to the
+    Business Unit since D01, so the helper resolves it.
+    """
     scenario = Scenario(
-        name=name, customer_id=customer.id, status=ScenarioStatus.DRAFT,
+        name=name, business_unit_id=customer.business_unit_id,
+        status=ScenarioStatus.DRAFT,
         description="test scenario", created_by="tester",
     )
     db.add(scenario)
@@ -796,10 +803,10 @@ def test_preview_write_tripwire_fires(db_session):
     s = _mixed_scenario(db_session)
     original = scenario_engine._line_changes
 
-    def _sneaky_write(base, after, well_names, resolver):
+    def _sneaky_write(*args, **kwargs):
         # Exactly the kind of edit the tripwire exists to catch.
         s["line_a"].quantity = 1.0
-        return original(base, after, well_names, resolver)
+        return original(*args, **kwargs)
 
     scenario_engine._line_changes = _sneaky_write
     try:
@@ -865,7 +872,7 @@ def test_inventory_override_cannot_name_another_business_unit(db_session):
     )
 
     with pytest.raises(OverrideError, match="hard inventory boundary"):
-        ScenarioOverrides([bad], customer)
+        ScenarioOverrides([bad], customer.business_unit)
 
     # Belt and braces: even if such a row were somehow persisted, the preview
     # refuses to run rather than computing with it silently dropped.
@@ -914,10 +921,19 @@ def test_inventory_override_does_not_leak_into_another_bu(db_session):
     assert gulf_line.coverage_result.status == CoverageStatus.UNCOVERED
 
 
-def test_override_cannot_target_another_customers_demand_line(db_session):
-    """A scenario belongs to one customer. An override on someone else's line
-    would be silently ignored by the preview and then written for real by apply
-    -- the exact shape of a preview that lies. Refused at creation."""
+def test_override_can_target_a_neighbour_in_the_same_bu_but_not_another_bu(db_session):
+    """A scenario belongs to one BUSINESS UNIT (D01).
+
+    A line belonging to another customer of the SAME Business Unit is in scope,
+    and must be: the pool is divided across those customers together, so the
+    preview genuinely prices that line. This test asserted the opposite while
+    coverage was per customer.
+
+    A line in ANOTHER Business Unit stays refused, and for the original reason --
+    the pass never sees it, so an override on it would be silently ignored by the
+    preview and then written for real by apply, which is the exact shape of a
+    preview that lies.
+    """
     from app.engines.scenario import assert_target_in_scope
 
     bu = _bu(db_session)
@@ -930,14 +946,26 @@ def test_override_cannot_target_another_customers_demand_line(db_session):
     _line(db_session, _well(db_session, my_node, "W-Mine"), product, 500)
 
     scenario = _scenario(db_session, mine, "Reach across")
-    bad = ScenarioOverride(
+    neighbour = ScenarioOverride(
         scenario_id=scenario.id,
         target_kind=ScenarioTargetKind.DEMAND_LINE,
         target_demand_line_id=their_line.id,
         field_name="quantity", value_number=1,
     )
-    with pytest.raises(ValueError, match="belongs to a different customer"):
-        assert_target_in_scope(db_session, scenario, bad)
+    assert_target_in_scope(db_session, scenario, neighbour)  # allowed
+
+    far_bu = _bu(db_session, name="Gulf")
+    far, far_node = _customer(db_session, "Far", far_bu)
+    _stock(db_session, far_bu, product, 0)
+    far_line = _line(db_session, _well(db_session, far_node, "W-Far"), product, 100)
+    across = ScenarioOverride(
+        scenario_id=scenario.id,
+        target_kind=ScenarioTargetKind.DEMAND_LINE,
+        target_demand_line_id=far_line.id,
+        field_name="quantity", value_number=1,
+    )
+    with pytest.raises(ValueError, match="belongs to a different Business Unit"):
+        assert_target_in_scope(db_session, scenario, across)
 
 
 def _applied_revisions(db):
@@ -1592,7 +1620,7 @@ def test_validate_rejects_a_field_that_does_not_belong_to_the_target(db_session)
         field_name="ros_date", value_date=datetime.utcnow(),
     )
     with pytest.raises(OverrideError, match="cannot be overridden"):
-        ScenarioOverrides([bad], customer)
+        ScenarioOverrides([bad], customer.business_unit)
 
 
 def test_validate_rejects_a_wrongly_typed_value(db_session):
@@ -1605,7 +1633,7 @@ def test_validate_rejects_a_wrongly_typed_value(db_session):
         field_name="quantity", value_text="lots",
     )
     with pytest.raises(OverrideError, match="needs a number value"):
-        ScenarioOverrides([bad], customer)
+        ScenarioOverrides([bad], customer.business_unit)
 
 
 def test_validate_rejects_a_bad_enum_value(db_session):
@@ -1627,7 +1655,7 @@ def test_validate_rejects_a_bad_enum_value(db_session):
         field_name="demand_status", value_text="Maybe",
     )
     with pytest.raises(OverrideError, match="not a valid"):
-        ScenarioOverrides([bad], customer)
+        ScenarioOverrides([bad], customer.business_unit)
 
 
 def test_status_is_no_longer_a_demand_line_field(db_session):
@@ -1647,7 +1675,7 @@ def test_status_is_no_longer_a_demand_line_field(db_session):
         field_name="status", value_text="Confirmed",
     )
     with pytest.raises(OverrideError, match="cannot be overridden on a DemandLine"):
-        ScenarioOverrides([bad], customer)
+        ScenarioOverrides([bad], customer.business_unit)
 
 
 def test_validate_rejects_a_negative_quantity(db_session):
@@ -1660,7 +1688,7 @@ def test_validate_rejects_a_negative_quantity(db_session):
         field_name="quantity", value_number=-5,
     )
     with pytest.raises(OverrideError, match="cannot be negative"):
-        ScenarioOverrides([bad], customer)
+        ScenarioOverrides([bad], customer.business_unit)
 
 
 # --------------------------------------------------------------------------
@@ -1705,7 +1733,7 @@ def test_scenario_routes_end_to_end(db_session):
             "/scenarios",
             json={
                 "name": "HTTP scenario",
-                "customer_id": customer.id,
+                "business_unit_id": customer.business_unit_id,
                 "description": "via the API",
                 "created_by": "tester",
             },
@@ -1732,7 +1760,7 @@ def test_scenario_routes_end_to_end(db_session):
         assert listed.status_code == 200
         (row,) = listed.json()
         assert row["override_count"] == 1
-        assert row["customer_name"] == customer.name
+        assert row["business_unit_id"] == customer.business_unit_id
         assert row["coverage_delta_wells"] == 1
 
         got = client.get(f"/scenarios/{scenario_id}")
@@ -1921,28 +1949,44 @@ def test_a_well_status_override_matching_the_base_plan_writes_nothing(db_session
     assert any("already is" in n for n in result.notes)
 
 
-def test_a_well_status_override_naming_another_customers_well_is_refused(db_session):
-    """The scenario/customer boundary, extended to the new target kind.
+def test_a_well_status_override_naming_another_bus_well_is_refused(db_session):
+    """The scenario/Business-Unit boundary, extended to the WELL target kind.
 
-    A scenario may only override its own customer's plan: coverage is computed per
-    customer, so an override on somebody else's well would be invisible to the
-    preview while `apply_to_base_plan` cascaded revisions through it.
+    A scenario may only override its own Business Unit's plan: coverage is
+    allocated per Business Unit (D01), so an override on a well outside it would
+    be invisible to the preview while `apply_to_base_plan` cascaded revisions
+    through it. A well belonging to another customer of the SAME BU is in scope --
+    the pass sees it and prices it.
     """
     product = _product(db_session, on_hand_qty=1000)
     customer, node = _customer(db_session)
     other, other_node = _customer(db_session, name="Someone Else")
-    foreign_well = _well(db_session, other_node, "W-Foreign")
-    _line(db_session, foreign_well, product, quantity=100)
+    neighbour_well = _well(db_session, other_node, "W-Neighbour")
+    _line(db_session, neighbour_well, product, quantity=100)
 
     scenario = _scenario(db_session, customer, "Reach across")
-    override = ScenarioOverride(
+    allowed = ScenarioOverride(
         scenario_id=scenario.id,
         target_kind=ScenarioTargetKind.WELL,
-        target_well_id=foreign_well.id,
+        target_well_id=neighbour_well.id,
         field_name="demand_status",
         value_text="Budgeted",
     )
-    with pytest.raises(ValueError, match="belongs to a different customer"):
+    assert_target_in_scope(db_session, scenario, allowed)
+
+    far_bu = _bu(db_session, name="Gulf")
+    far, far_node = _customer(db_session, "Far", far_bu)
+    _stock(db_session, far_bu, product, 0)
+    far_well = _well(db_session, far_node, "W-Far")
+    _line(db_session, far_well, product, quantity=100)
+    override = ScenarioOverride(
+        scenario_id=scenario.id,
+        target_kind=ScenarioTargetKind.WELL,
+        target_well_id=far_well.id,
+        field_name="demand_status",
+        value_text="Budgeted",
+    )
+    with pytest.raises(ValueError, match="belongs to a different Business Unit"):
         assert_target_in_scope(db_session, scenario, override)
 
 
@@ -1960,7 +2004,7 @@ def test_a_well_override_may_not_also_name_a_demand_line(db_session):
         value_text="Confirmed",
     )
     with pytest.raises(OverrideError, match="must not also name a demand line"):
-        ScenarioOverrides([bad], customer)
+        ScenarioOverrides([bad], customer.business_unit)
 
 
 def test_the_override_vocabulary_lists_demand_status_on_WELL_only(db_session):

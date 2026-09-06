@@ -35,7 +35,8 @@ class Customer(Base):
                      never moves customer A's official verdict. Planners may ask,
                      as a read-only WHAT-IF, whether uncovered demand could be met
                      from another customer's surplus WITHIN the same BU -- that is
-                     app.engines.sharing, and it mutates nothing.
+                     the pool is divided across every customer of the BU
+                     together, earliest need first (D01).
 
     `business_unit_id` is NULLABLE, and NULL has one precise meaning: "not yet
     mapped to a Business Unit". It does NOT mean "shares with everything".

@@ -520,3 +520,47 @@ An external adversarial review arrived with ten reproduced scenarios. **Nothing 
 `by_item(db, product_id, business_unit_id=)` confines both the inventory position (`_inventory_position`) and the demand charged to the product (`_lines_charged_to` → `_included_lines`) to one BU; `/mrp/by-item` takes `planner_bu`. Administrators keep the system-wide view. A BU with no on-hand row for the product answers `InventoryRowMissing` (424), as the MOR grid does. `/mrp/lead-time` reads master data, not stock, and is untouched. With this every boundary finding of the review (F01/F02/C-13/C-15) is closed. 745 tests.
 
 **Next**: rulings on D01/D02 and C-17 → C-12 / C-14 / login rate limiting.
+
+## 22. 2026-09-06: D01 — the unit of allocation is the Business Unit (owner ruling)
+
+**The defect**: coverage was computed per customer against the whole Business
+Unit's stock, independently. Demonstrated against the shipped demo database:
+10,045 metres of one tubing on the shelf and four wells across two customers all
+reported Covered — 14,050 promised. Across the BU, **49,240 promised twice**.
+
+**Rulings (one at a time, through AskUserQuestion)**: (1) option A — allocate the
+Business Unit in one pass and change the official verdict, ordered by earliest
+ROS with no customer priority; (2) the preview scope — a scenario becomes
+Business-Unit-scoped too.
+
+**Implemented (5 commits, 738 tests, 2 migrations)**:
+1. **Engine** — `compute_business_unit_coverage` is the single implementation.
+   `allocate_business_unit` makes the three tiers explicit: customer-owned (keyed
+   by customer) → the Oracle assignment (keyed by line; for a SOFT customer, its
+   own pooled block keyed by customer) → the BU's shared unassigned pool. Company
+   draws are capped by what physically exists, so over-assignment cannot
+   manufacture coverage. `compute_customer_coverage` is a projection of the pass
+   and `recompute_business_unit` is the only writer. **SOFT means exactly what it
+   meant**: a soft customer's own assignments are pooled across its own lines and
+   are still out of a neighbour's reach.
+2. **Previews** — the scenario preview and the import conflict preview diff the
+   BU-wide pass. Cutting one customer's demand frees steel an earlier-ROS line of
+   a neighbour takes, so a customer-scoped preview disagreed with what apply
+   would do — the "preview that lies" shape both modules exist to prevent. Every
+   line and well change carries the customer it belongs to.
+3. **Scenario** — `Scenario.customer_id` became `business_unit_id` (migration
+   `e4a17c9b3d60`, backfilled from each scenario's customer's BU). An override may
+   name any line of the Business Unit and is still refused across it.
+4. **Cross-customer sharing retired** — "could a neighbour's surplus cover this?"
+   presupposed per-customer evaluation. With the pool divided once, the surplus
+   has already gone to whoever needed it soonest. Engine, route, schemas, screen,
+   nav entry and three entry points removed; the surplus report is a different
+   question and stays. The two tests pinning "customer-owned is never shared" were
+   rewritten against the pass that now genuinely shares the pool.
+
+**Effect on the demo**: Covered 87 → 67, double-promised quantity 49,240 → 0.
+**Pending approvals went 2 → 0** because the tighter pool leaves the substitute
+stock already spoken for; the seed quantities want re-tuning.
+
+**Next**: C-12 / C-14 / login rate limiting, D02 (the PO-versus-coverage
+specification contradiction), D03 / D04.

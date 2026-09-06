@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   api,
-  CustomerSummary,
+  BusinessUnitOut,
   ScenarioStatus,
   ScenarioSummary,
 } from "../api/client";
@@ -71,15 +71,15 @@ function CoverageDelta({ scenario }: { scenario: ScenarioSummary }) {
 }
 
 function NewScenarioForm({
-  customers,
+  businessUnits,
   onCreated,
 }: {
-  customers: CustomerSummary[];
+  businessUnits: BusinessUnitOut[];
   onCreated: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
-  const [customerId, setCustomerId] = useState(customers[0]?.id ?? "");
+  const [businessUnitId, setBusinessUnitId] = useState(businessUnits[0]?.id ?? "");
   const [description, setDescription] = useState("");
   const [createdBy, setCreatedBy] = useState("");
   const [busy, setBusy] = useState(false);
@@ -101,7 +101,7 @@ function NewScenarioForm({
     try {
       await api.createScenario({
         name,
-        customer_id: customerId || customers[0]?.id,
+        business_unit_id: businessUnitId || businessUnits[0]?.id,
         description: description || null,
         created_by: createdBy || null,
       });
@@ -127,11 +127,14 @@ function NewScenarioForm({
         />
       </label>
       <label>
-        Customer
-        <select value={customerId} onChange={(e) => setCustomerId(e.target.value)}>
-          {customers.map((c) => (
-            <option key={c.id} value={c.id}>
-              {c.name}
+        Business Unit
+        <select
+          value={businessUnitId}
+          onChange={(e) => setBusinessUnitId(e.target.value)}
+        >
+          {businessUnits.map((b) => (
+            <option key={b.id} value={b.id}>
+              {b.name}
             </option>
           ))}
         </select>
@@ -148,7 +151,7 @@ function NewScenarioForm({
           onChange={(e) => setCreatedBy(e.target.value)}
         />
       </label>
-      <button onClick={submit} disabled={busy || !name || !customerId}>
+      <button onClick={submit} disabled={busy || !name || !businessUnitId}>
         {busy ? "Creating..." : "Create"}
       </button>
       <button className="link-btn" onClick={() => setOpen(false)} disabled={busy}>
@@ -161,7 +164,7 @@ function NewScenarioForm({
 
 export default function ScenarioList() {
   const [scenarios, setScenarios] = useState<ScenarioSummary[] | null>(null);
-  const [customers, setCustomers] = useState<CustomerSummary[]>([]);
+  const [businessUnits, setBusinessUnits] = useState<BusinessUnitOut[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [fetchedAt, setFetchedAt] = useState<Date | null>(null);
   const [busy, setBusy] = useState(false);
@@ -192,8 +195,11 @@ export default function ScenarioList() {
 
   useEffect(() => {
     reload();
-    // A failing customer list must not blank the page; it only feeds the form.
-    api.getCustomers().then(setCustomers).catch(() => setCustomers([]));
+    // A failing Business Unit list must not blank the page; it only feeds the form.
+    api
+      .getBusinessUnits()
+      .then(setBusinessUnits)
+      .catch(() => setBusinessUnits([]));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -229,7 +235,7 @@ export default function ScenarioList() {
         &ldquo;Created by&rdquo; is attribution, not permission.
       </p>
 
-      <NewScenarioForm customers={customers} onCreated={reload} />
+      <NewScenarioForm businessUnits={businessUnits} onCreated={reload} />
 
       {sorted.length === 0 ? (
         <div className="card">
@@ -250,7 +256,7 @@ export default function ScenarioList() {
                 <StatusBadge status={s.status} />
               </div>
               <div className="scenario-meta">
-                <span>{s.customer_name}</span>
+                <span>{s.business_unit_name ?? "—"}</span>
                 <span>
                   {s.override_count} override{s.override_count === 1 ? "" : "s"}
                 </span>

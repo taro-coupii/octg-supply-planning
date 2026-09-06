@@ -61,7 +61,7 @@ implementation of applying, not two.
 
 IT WRITES NOTHING
 -----------------
-The same four layers as `app.engines.sharing` and `app.engines.scenario`,
+The same four layers as `app.engines.scenario`,
 deliberately copied rather than reinvented:
 
   1. It never imports the persisting code path. `recompute_customer`,
@@ -87,7 +87,11 @@ from datetime import datetime
 
 from sqlalchemy.orm import Session
 
-from app.engines.coverage import CustomerCoverage, compute_customer_coverage
+from app.engines.coverage import (
+    CustomerCoverage,
+    compute_business_unit_coverage,
+    compute_customer_coverage,
+)
 from app.engines.demand_import import (
     CONFLICT_CONCURRENT_REVISION,
     CONFLICT_WELL_DEMAND_STATUS,
@@ -97,6 +101,7 @@ from app.engines.demand_import import (
 from app.engines.overrides import NO_OVERRIDES, ScenarioOverrides
 from app.models import (
     CoverageStatus,
+    Customer,
     DemandImportRow,
     PlanningNode,
     ScenarioOverride,
@@ -266,14 +271,26 @@ def preview_row_conflict(
         overrides = _overrides_for(db, row, conflict, customer)
         resolver = ScenarioOverrides(overrides, customer)
 
-        base = compute_customer_coverage(db, customer, None, None, NO_OVERRIDES)
-        after = compute_customer_coverage(db, customer, None, None, resolver)
+        # The whole Business Unit, because that is what applying this row would
+        # re-divide (D01). A customer-scoped preview would show the reviewer their
+        # own well moving and hide the neighbour whose well moves with it -- and
+        # apply, running the same pass and keeping all of it, would do both.
+        business_unit = customer.business_unit
+        if business_unit is None:
+            raise ConflictPreviewUnavailable(
+                f"Row {row.row_number} belongs to customer {customer.name!r}, which "
+                "is not mapped to a Business Unit, so there is no inventory pool to "
+                "compute a coverage impact against."
+            )
+        base = compute_business_unit_coverage(db, business_unit, None, None, NO_OVERRIDES)
+        after = compute_business_unit_coverage(db, business_unit, None, None, resolver)
 
         well_names = {
             w.id: w.name
             for w in db.query(Well)
             .join(PlanningNode, Well.planning_node_id == PlanningNode.id)
-            .filter(PlanningNode.customer_id == customer.id)
+            .join(Customer, PlanningNode.customer_id == Customer.id)
+            .filter(Customer.business_unit_id == business_unit.id)
         }
         revised = _revised_line_ids(db, row, conflict)
         # DISTINCT from `revised`, deliberately. `revised` is every line applying

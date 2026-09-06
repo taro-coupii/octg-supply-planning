@@ -8,12 +8,12 @@ From the discovery workshop:
     conversations. "What if this demand becomes confirmed?" "What if this ROS
     moves out 30 days?" "What if mill delivery accelerates?"
 
-So a scenario is a named, reviewable BUNDLE OF OVERRIDES against one customer's
-plan, plus a lifecycle that ends either in "Applied to base plan" or in nothing
+So a scenario is a named, reviewable BUNDLE OF OVERRIDES against one Business
+Unit's plan, plus a lifecycle that ends either in "Applied to base plan" or in nothing
 at all. It is a conversation artefact, not a second plan of record: until it is
 applied, NOTHING in it affects the official coverage verdict (see
 app.engines.scenario, which is a read-only projection built the same way
-app.engines.sharing is).
+the surplus report is).
 
 Scenarios are SHARED
 --------------------
@@ -236,12 +236,19 @@ class ScenarioTargetKind(str, enum.Enum):
 
 
 class Scenario(Base):
-    """A named bundle of overrides against ONE customer's plan.
+    """A named bundle of overrides against ONE BUSINESS UNIT's plan.
 
-    Scoped to a customer because that is the scope coverage is computed at (see
-    app.engines.coverage.recompute_customer): a scenario spanning two customers
-    could not be previewed as one coherent coverage answer without pooling their
-    inventory, which is exactly the boundary the platform does not cross.
+    Scoped to the Business Unit because that is the scope coverage is computed at
+    (see `app.engines.coverage.compute_business_unit_coverage`). It was scoped to
+    a CUSTOMER until the product owner's ruling of 2026-09-06 (D01) made the pool
+    Business-Unit-wide: after that a customer-scoped scenario was a promise about
+    a division of steel it could not see, because changing one customer's demand
+    moves an earlier-ROS line of a neighbour, and a preview confined to the
+    scenario's own customer would have hidden exactly that.
+
+    Its overrides may name any demand line, well or product of the Business Unit,
+    and the preview reports the whole BU's impact with each change attributed to
+    the customer it belongs to.
     """
 
     __tablename__ = "scenarios"
@@ -249,7 +256,9 @@ class Scenario(Base):
     id = Column(String(36), primary_key=True, default=_uuid)
     name = Column(String, nullable=False)
     description = Column(String, nullable=True)
-    customer_id = Column(String(36), ForeignKey("customers.id"), nullable=False)
+    business_unit_id = Column(
+        String(36), ForeignKey("business_units.id"), nullable=False
+    )
     status = Column(
         SAEnum(ScenarioStatus), nullable=False, default=ScenarioStatus.DRAFT
     )
@@ -272,6 +281,8 @@ class Scenario(Base):
     #: SAW, not whatever the scenario has become since.
     version = Column(Integer, nullable=False, default=1, server_default="1")
 
+    business_unit = relationship("BusinessUnit")
+
     created_by_user = relationship(
         "User",
         primaryjoin="foreign(Scenario.created_by_user_id) == User.id",
@@ -282,7 +293,6 @@ class Scenario(Base):
     def created_by_user_name(self) -> str | None:
         return self.created_by_user.display_name if self.created_by_user else None
 
-    customer = relationship("Customer")
     overrides = relationship(
         "ScenarioOverride",
         back_populates="scenario",
@@ -333,10 +343,10 @@ class ScenarioOverride(Base):
     Carried explicitly on INVENTORY overrides rather than inferred, so the
     Business Unit an override applies to is a stated FACT in the row instead of
     something reconstructed at read time. `app.engines.overrides.validate`
-    refuses any inventory override whose BU is not the scenario customer's own
-    BU. That is the data-level half of the guarantee; the other half is
-    structural -- the preview only ever recomputes the scenario customer's pool,
-    so no other BU's coverage reads these rows at all.
+    refuses any inventory override whose BU is not the scenario's own. That is the
+    data-level half of the guarantee; the other half is structural -- the preview
+    only ever recomputes the scenario's own Business Unit, so no other BU's
+    coverage reads these rows at all.
     """
 
     __tablename__ = "scenario_overrides"

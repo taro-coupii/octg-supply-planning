@@ -33,7 +33,6 @@ from app.engines.inventory import (
     InventoryRowMissing,
     InventoryScopeMissing,
 )
-from app.engines.sharing import cross_customer_sharing
 from app.models import (
     AllocationPolicy,
     BusinessUnit,
@@ -265,13 +264,22 @@ def test_demand_in_another_bu_never_changes_this_bus_coverage(db_session):
     assert _status(line_north) == CoverageStatus.COVERED
 
 
-def test_official_coverage_is_still_customer_scoped_inside_one_bu(db_session):
-    """THE crucial 'default is still separated' test.
+def test_the_pool_is_the_business_unit_and_it_cannot_over_promise(db_session):
+    """THE 'one Business Unit, one division of the steel' test.
 
-    Two customers, ONE BU, one product, 6000 on hand. Customer B demands 6000
-    with an EARLIER ROS than customer A's 5000. If the pool had silently widened
-    to the BU, A would lose. It must not: the customer boundary is the default
-    and only the read-only what-if is allowed to look past it.
+    Two customers, ONE BU, one product, 6000 on hand. Customer B demands 6000 with
+    an EARLIER ROS than customer A's 5000, so B takes the shelf and A is left with
+    nothing.
+
+    This test asserted the OPPOSITE until 2026-09-06. Coverage was computed per
+    customer against the whole Business Unit quantity, so both were reported
+    Covered off the same 6000 and the BU had promised 11,000 it did not have. The
+    product owner ruled that out (D01): the pool is contested once, earliest ROS
+    first, across every customer in the Business Unit.
+
+    Note what did NOT change: A's verdict moves because of B's demand, which is
+    the whole point, but nothing here crosses a BUSINESS UNIT boundary -- that one
+    is still absolute, and `test_a_second_bu_is_invisible_to_the_first` pins it.
     """
     bu = _bu(db_session, "Shared BU")
     product = _product(db_session)
@@ -281,19 +289,27 @@ def test_official_coverage_is_still_customer_scoped_inside_one_bu(db_session):
     c_b, node_b = _customer(db_session, "Cust B", bu)
     line_a = _line(db_session, _well(db_session, node_a, "W-A"), product, quantity=5000)
     recompute_customer(db_session, c_a)
+    # Alone in the Business Unit, A is covered -- there is nobody to compete with.
     assert _status(line_a) == CoverageStatus.COVERED
 
     line_b = _line(
         db_session, _well(db_session, node_b, "W-B"), product,
         quantity=6000, days_out=FAR_ROS_DAYS - 100,
     )
+    # Recomputing EITHER customer now re-divides the whole Business Unit, so one
+    # call is enough and a second cannot change the answer.
     recompute_customer(db_session, c_b)
-    recompute_customer(db_session, c_a)
 
-    # Both are Covered against the same 6000 -- the BU has over-promised, and
-    # that is the documented consequence of customer separation, not a bug.
     assert _status(line_b) == CoverageStatus.COVERED
-    assert _status(line_a) == CoverageStatus.COVERED
+    assert _status(line_a) == CoverageStatus.UNCOVERED
+    # The arithmetic is stated, not implied: A drew nothing, and the whole 5000 is
+    # what a mill order would have to cover.
+    assert line_a.coverage_result.drawn_company == 0
+    assert line_a.coverage_result.residual == 5000
+
+    recompute_customer(db_session, c_a)
+    assert _status(line_b) == CoverageStatus.COVERED
+    assert _status(line_a) == CoverageStatus.UNCOVERED
 
 
 # --------------------------------------------------------------------------
@@ -601,423 +617,14 @@ def test_hard_reservation_inside_the_same_bu_still_nets_off(db_session):
 # --------------------------------------------------------------------------
 
 
-def _sharing_scenario(db_session):
-    """One BU with a needy HARD customer and a SOFT customer holding surplus,
-    plus a second BU stuffed with the same product.
-
-    BU North holds 9000. Soft Co consumes 2000 (Covered) -> 7000 surplus.
-    Hard Co needs 5000 with NOTHING assigned -> Uncovered under hard allocation
-    even though the steel is on the shelf. 5000 <= 7000, so sharing WOULD cover
-    it.
-
-    BU Gulf holds 50000 of the identical product and must never be offered.
-    """
-    bu_north = _bu(db_session, "North")
-    bu_gulf = _bu(db_session, "Gulf")
-    product = _product(db_session)
-    _stock(db_session, bu_north, product, 9000)
-    _stock(db_session, bu_gulf, product, 50000)
-
-    soft_co, soft_node = _customer(
-        db_session, "Soft Co", bu_north, AllocationPolicy.SOFT
-    )
-    hard_co, hard_node = _customer(
-        db_session, "Hard Co", bu_north, AllocationPolicy.HARD
-    )
-    gulf_co, gulf_node = _customer(
-        db_session, "Gulf Co", bu_gulf, AllocationPolicy.SOFT
-    )
-
-    surplus_line = _line(
-        db_session, _well(db_session, soft_node, "W-Surplus"), product, 2000
-    )
-    needy_line = _line(
-        db_session, _well(db_session, hard_node, "W-Needy"), product,
-        5000, days_out=FAR_ROS_DAYS + 10,
-    )
-    gulf_line = _line(
-        db_session, _well(db_session, gulf_node, "W-Gulf"), product, 1000
-    )
-
-    for customer in (soft_co, hard_co, gulf_co):
-        recompute_customer(db_session, customer)
-
-    assert _status(surplus_line) == CoverageStatus.COVERED
-    assert _status(needy_line) == CoverageStatus.UNCOVERED
-
-    return {
-        "bu_north": bu_north, "bu_gulf": bu_gulf, "product": product,
-        "soft_co": soft_co, "hard_co": hard_co, "gulf_co": gulf_co,
-        "surplus_line": surplus_line, "needy_line": needy_line,
-        "gulf_line": gulf_line,
-    }
-
-
 # --------------------------------------------------------------------------
 # 6. Sharing analysis -- behaviour
 # --------------------------------------------------------------------------
 
 
-def test_sharing_analysis_finds_surplus_within_the_bu(db_session):
-    s = _sharing_scenario(db_session)
-
-    result = cross_customer_sharing(db_session, s["hard_co"])
-
-    assert result.business_unit_id == s["bu_north"].id
-    assert result.donor_customer_ids == (s["soft_co"].id,)
-    assert len(result.uncovered_lines) == 1
-
-    outcome = result.uncovered_lines[0]
-    assert outcome.demand_line_id == s["needy_line"].id
-    assert outcome.would_be_covered is True
-    assert outcome.shared_quantity == 5000
-    assert outcome.shortfall == 0
-    assert [c.from_customer_name for c in outcome.contributions] == ["Soft Co"]
-    assert outcome.contributions[0].quantity == 5000
-    assert result.covered_by_sharing_count == 1
-    assert result.still_uncovered_count == 0
-
-    # And the surplus arithmetic is reported, not just the verdict.
-    (surplus,) = result.product_surplus
-    assert surplus.bu_on_hand == 9000
-    assert surplus.committed_in_bu == 2000  # Soft Co's covered 2000; Hard Co 0
-    assert surplus.shareable == 7000
-
-
-def test_sharing_analysis_never_offers_inventory_from_another_bu(db_session):
-    """BU Gulf holds 50000 of the identical product. Not one unit is offered."""
-    s = _sharing_scenario(db_session)
-
-    # Make BU North genuinely short so the ONLY way to cover is to cross the BU.
-    db_session.query(InventoryOnHand).filter(
-        InventoryOnHand.business_unit_id == s["bu_north"].id
-    ).one().quantity = 1000
-    db_session.flush()
-    recompute_customer(db_session, s["soft_co"])
-    recompute_customer(db_session, s["hard_co"])
-
-    result = cross_customer_sharing(db_session, s["hard_co"])
-
-    (outcome,) = result.uncovered_lines
-    assert outcome.would_be_covered is False
-    assert outcome.shared_quantity == 0
-    (surplus,) = result.product_surplus
-    # 1000 on hand, all of it consumed by Soft Co's covered 1000... it demanded
-    # 2000, which 1000 cannot cover, so Soft Co commits nothing and 1000 is
-    # spare. Either way the number is bounded by BU North, never by BU Gulf.
-    assert surplus.bu_on_hand == 1000
-    assert surplus.shareable <= 1000
-    assert s["gulf_co"].id not in result.donor_customer_ids
-
-    # Symmetrically, BU Gulf is not offered BU North's stock either.
-    gulf_result = cross_customer_sharing(db_session, s["gulf_co"])
-    assert gulf_result.business_unit_id == s["bu_gulf"].id
-    assert gulf_result.donor_customer_ids == ()
-
-
-def test_sharing_analysis_only_offers_genuine_surplus_never_committed_stock(
-    db_session,
-):
-    """Robbing Peter to pay Paul is refused.
-
-    Soft Co's demand is raised to 8000 (still Covered -- 8000 <= 9000), leaving
-    only 1000 of genuine surplus. Hard Co's 5000 must NOT be reported coverable:
-    the only way to find 5000 would be to take stock off Soft Co's covered line,
-    which would uncover Soft Co and leave the BU no better off.
-    """
-    s = _sharing_scenario(db_session)
-    s["surplus_line"].quantity = 8000
-    db_session.flush()
-    recompute_customer(db_session, s["soft_co"])
-    assert _status(s["surplus_line"]) == CoverageStatus.COVERED
-
-    result = cross_customer_sharing(db_session, s["hard_co"])
-
-    (surplus,) = result.product_surplus
-    assert surplus.committed_in_bu == 8000
-    assert surplus.shareable == 1000
-
-    (outcome,) = result.uncovered_lines
-    assert outcome.would_be_covered is False
-    assert outcome.shared_quantity == 0
-    assert outcome.shortfall == 4000
-    assert outcome.contributions == ()
-    assert "not offered" in outcome.explanation
-    assert result.still_uncovered_count == 1
-
-    # Soft Co's official verdict is untouched by having been asked about.
-    assert _status(s["surplus_line"]) == CoverageStatus.COVERED
-
-
-def test_hard_assignment_reserved_to_an_uncovered_line_is_not_surplus(db_session):
-    """Committed is wider than consumed.
-
-    Under HARD an assignment stays reserved to its line even when that line
-    ended up UNCOVERED (the rule app.engines.allocation enforces). Soft Co is
-    replaced here by a hard customer holding 6000 reserved against a 9000
-    requirement it cannot meet: it draws nothing, but that 6000 is still its
-    steel and must not be handed to somebody else.
-    """
-    bu = _bu(db_session, "Reserve BU")
-    product = _product(db_session)
-    _stock(db_session, bu, product, 9000)
-
-    holder, holder_node = _customer(
-        db_session, "Holder Co", bu, AllocationPolicy.HARD
-    )
-    needy, needy_node = _customer(db_session, "Needy Co", bu, AllocationPolicy.HARD)
-
-    held_line = _line(
-        db_session, _well(db_session, holder_node, "W-Held"), product, 9000
-    )
-    _assign(db_session, held_line, product, 6000)
-    needy_line = _line(
-        db_session, _well(db_session, needy_node, "W-Needy"), product, 5000
-    )
-    recompute_customer(db_session, holder)
-    recompute_customer(db_session, needy)
-
-    # Partial assignment, no pool top-up under HARD -> the holder is uncovered
-    # and has consumed nothing at all.
-    assert _status(held_line) == CoverageStatus.UNCOVERED
-    assert _status(needy_line) == CoverageStatus.UNCOVERED
-
-    result = cross_customer_sharing(db_session, needy)
-
-    (surplus,) = result.product_surplus
-    # 6000 reserved to the holder's line, so only 3000 is genuine surplus --
-    # NOT the 9000 a consumption-only definition would have offered.
-    assert surplus.committed_in_bu == 6000
-    assert surplus.shareable == 3000
-
-    (outcome,) = result.uncovered_lines
-    assert outcome.would_be_covered is False
-    assert outcome.shortfall == 2000
-
-
-def test_sharing_never_offers_a_soft_customers_hard_assigned_steel(db_session):
-    """A SOFT donor's hard assignment is not surplus either.
-
-    `committed` used to be `drawn` only under SOFT, on the reasoning that "no
-    reservations exist under SOFT". That is true of the soft customer's OWN
-    coverage -- pooling means its assignments do not constrain it -- and false of
-    what it may give away. The assignment is a read-only Oracle fact tying that
-    steel to one specific demand line; offering it to a neighbour would have the
-    platform override the reservation through the analysis path, which is exactly
-    the hole the coverage engine now closes one level up.
-
-        BU holds 5000. Soft Donor demands 1000 (Covered) but holds 4000
-        hard-assigned in Oracle. Needy Co needs 2000.
-
-    Genuine surplus is 5000 - max(4000, 1000) = 1000, so the 2000 line is NOT
-    coverable. On the old rule committed was 1000, surplus looked like 4000, and
-    the analysis would have offered somebody else's reserved steel.
-    """
-    bu = _bu(db_session, "Soft Reserve BU")
-    product = _product(db_session)
-    _stock(db_session, bu, product, 5000)
-
-    donor, donor_node = _customer(
-        db_session, "Soft Donor Co", bu, AllocationPolicy.SOFT
-    )
-    needy, needy_node = _customer(db_session, "Needy Co", bu, AllocationPolicy.HARD)
-
-    donor_line = _line(
-        db_session, _well(db_session, donor_node, "W-SoftDonor"), product, 1000
-    )
-    _assign(db_session, donor_line, product, 4000)
-    needy_line = _line(
-        db_session, _well(db_session, needy_node, "W-Needy"), product, 2000
-    )
-    recompute_customer(db_session, donor)
-    recompute_customer(db_session, needy)
-
-    # Pooling is intact: the soft donor's own assignment did not constrain it, and
-    # its 1000 line is Covered out of the 5000 the BU holds.
-    assert _status(donor_line) == CoverageStatus.COVERED
-    assert _status(needy_line) == CoverageStatus.UNCOVERED
-
-    result = cross_customer_sharing(db_session, needy)
-
-    (surplus,) = result.product_surplus
-    assert surplus.bu_on_hand == 5000
-    assert surplus.committed_in_bu == 4000
-    assert surplus.shareable == 1000
-
-    (outcome,) = result.uncovered_lines
-    assert outcome.would_be_covered is False
-    assert outcome.shared_quantity == 0
-    assert outcome.shortfall == 1000
-    assert result.covered_by_sharing_count == 0
-
-
-def test_a_customer_with_no_demand_for_the_product_is_not_credited_as_donor(
-    db_session,
-):
-    """Slack alone does not make somebody a donor.
-
-    A customer that has never ordered this product has consumed none of the BU
-    figure, so a naive `bu_on_hand - committed` scores it the MAXIMUM possible
-    slack and reports it as the biggest donor of a product it has never heard of.
-    The surplus is real, but it is BU-level unallocated stock -- not a named
-    customer's generosity -- and mislabelling it would send a planner to phone the
-    wrong operator.
-    """
-    bu = _bu(db_session, "Attrib BU")
-    needed = _product(db_session, grade="13CR80")
-    unrelated = _product(db_session, grade="13CR110")
-    _stock(db_session, bu, needed, 9000)
-    _stock(db_session, bu, unrelated, 9000)
-
-    # Bystander demands only the UNRELATED product, so it has no claim on
-    # `needed` at all.
-    bystander, bystander_node = _customer(
-        db_session, "Bystander Co", bu, AllocationPolicy.SOFT
-    )
-    needy, needy_node = _customer(db_session, "Needy Co", bu, AllocationPolicy.HARD)
-
-    _line(db_session, _well(db_session, bystander_node, "W-By"), unrelated, 1000)
-    needy_line = _line(
-        db_session, _well(db_session, needy_node, "W-Needy"), needed, 5000
-    )
-    recompute_customer(db_session, bystander)
-    recompute_customer(db_session, needy)
-    assert _status(needy_line) == CoverageStatus.UNCOVERED
-
-    result = cross_customer_sharing(db_session, needy)
-
-    (outcome,) = result.uncovered_lines
-    # The surplus is genuinely there, so sharing DOES resolve the line...
-    assert outcome.would_be_covered is True
-    assert outcome.shared_quantity == 5000
-    # ...but it is not attributed to the bystander.
-    assert outcome.contributions == ()
-    assert "BU-level unallocated stock" in outcome.explanation
-    assert "Bystander" not in outcome.explanation
-
-
-def test_sharing_analysis_ignores_lines_that_are_already_covered(db_session):
-    """Scoped to UNCOVERED demand. A Covered / CoveredViaSubstitute line is not
-    the planner's question and must not appear."""
-    s = _sharing_scenario(db_session)
-
-    result = cross_customer_sharing(db_session, s["soft_co"])
-
-    # Soft Co's only line is Covered, so there is nothing to analyse.
-    assert result.uncovered_lines == ()
-    assert result.covered_by_sharing_count == 0
-    assert result.still_uncovered_count == 0
-
-
-def test_sharing_analysis_orders_uncovered_lines_by_earliest_ros(db_session):
-    """Scarce surplus goes to the most urgent line, matching the coverage
-    engine's earliest-ROS-first rule -- the late line is the one that loses."""
-    bu = _bu(db_session, "Order BU")
-    product = _product(db_session)
-    _stock(db_session, bu, product, 5000)
-
-    donor, donor_node = _customer(db_session, "Donor Co", bu, AllocationPolicy.SOFT)
-    needy, needy_node = _customer(db_session, "Needy Co", bu, AllocationPolicy.HARD)
-
-    # Donor consumes nothing, so all 5000 is surplus.
-    late = _line(
-        db_session, _well(db_session, needy_node, "W-Late"), product,
-        4000, days_out=FAR_ROS_DAYS + 90,
-    )
-    early = _line(
-        db_session, _well(db_session, needy_node, "W-Early"), product,
-        4000, days_out=FAR_ROS_DAYS,
-    )
-    recompute_customer(db_session, donor)
-    recompute_customer(db_session, needy)
-    assert _status(early) == CoverageStatus.UNCOVERED
-    assert _status(late) == CoverageStatus.UNCOVERED
-
-    result = cross_customer_sharing(db_session, needy)
-
-    by_line = {o.demand_line_id: o for o in result.uncovered_lines}
-    assert by_line[early.id].would_be_covered is True
-    assert by_line[late.id].would_be_covered is False
-    assert result.uncovered_lines[0].demand_line_id == early.id
-
-
 # --------------------------------------------------------------------------
 # 7. Sharing analysis -- the no-write guarantee
 # --------------------------------------------------------------------------
-
-
-def _coverage_snapshot(db_session):
-    """Every persisted coverage fact, as plain comparable values."""
-    rows = {
-        r.demand_line_id: (r.status, r.reason, r.fulfilled_by_product_id)
-        for r in db_session.query(CoverageResult).all()
-    }
-    wells = {w.id: w.coverage_status for w in db_session.query(Well).all()}
-    return rows, wells
-
-
-def test_sharing_analysis_performs_no_writes(db_session):
-    """CoverageResult rows and Well.coverage_status must be identical before and
-    after -- the analysis is a projection, never a recalculation."""
-    s = _sharing_scenario(db_session)
-    db_session.flush()
-
-    before = _coverage_snapshot(db_session)
-    before_counts = (
-        len(db_session.new), len(db_session.dirty), len(db_session.deleted)
-    )
-
-    for customer in (s["hard_co"], s["soft_co"], s["gulf_co"]):
-        cross_customer_sharing(db_session, customer)
-
-    after = _coverage_snapshot(db_session)
-    assert after == before
-    assert (
-        len(db_session.new), len(db_session.dirty), len(db_session.deleted)
-    ) == before_counts
-
-    # And nothing was queued that a later commit could flush.
-    db_session.flush()
-    assert _coverage_snapshot(db_session) == before
-
-
-def test_sharing_analysis_does_not_create_coverage_rows_for_uncovered_lines(
-    db_session,
-):
-    """Specifically: the line the analysis says WOULD be covered keeps its
-    official Uncovered verdict, and no extra row appears anywhere."""
-    s = _sharing_scenario(db_session)
-    row_count_before = db_session.query(CoverageResult).count()
-
-    result = cross_customer_sharing(db_session, s["hard_co"])
-    assert result.uncovered_lines[0].would_be_covered is True
-
-    assert db_session.query(CoverageResult).count() == row_count_before
-    assert _status(s["needy_line"]) == CoverageStatus.UNCOVERED
-    assert s["needy_line"].well.coverage_status == CoverageStatus.UNCOVERED.value
-
-
-def test_sharing_analysis_write_tripwire_fires(db_session):
-    """The layer-4 guard is real, not decorative: if anything ever does leave a
-    pending change in the session, the analysis raises instead of letting a GET
-    quietly overwrite the official answer."""
-    from app.engines import sharing
-
-    s = _sharing_scenario(db_session)
-
-    original = sharing._customer_pass
-
-    def _sneaky_write(db, customer, bu_on_hand, *args, **kwargs):
-        # Exactly the kind of edit the tripwire exists to catch.
-        customer.name = customer.name + " (mutated)"
-        return original(db, customer, bu_on_hand, *args, **kwargs)
-
-    sharing._customer_pass = _sneaky_write
-    try:
-        with pytest.raises(AssertionError, match="must not modify the session"):
-            cross_customer_sharing(db_session, s["hard_co"])
-    finally:
-        sharing._customer_pass = original
 
 
 # --------------------------------------------------------------------------
@@ -1075,53 +682,6 @@ def test_customer_with_no_bu_cannot_have_coverage_computed_at_all(db_session):
     assert db_session.query(CoverageResult).count() == 0
     assert db_session.get(CoverageResult, line_a.id) is None
 
-    # The read-only sharing analysis still ANSWERS rather than raising -- its
-    # honest answer is "there is no BU to share within", and it says so. It offers
-    # nothing and names nobody, which is the original assertion, unchanged.
-    result = cross_customer_sharing(db_session, orphan_a)
-
-    assert result.business_unit_id is None
-    assert result.donor_customer_ids == ()
-    assert result.uncovered_lines == ()
-    assert result.product_surplus == ()
-    assert orphan_b.id not in result.donor_customer_ids
-    assert any("not mapped to a Business Unit" in n for n in result.notes)
-
-
-def test_unmapped_customer_is_not_a_donor_for_a_mapped_one(db_session):
-    """The isolation is symmetric, and now it is loud on the orphan's own side.
-
-    Original assertions kept verbatim: the MAPPED customer's sharing analysis
-    offers no donors and does not cover its line, so the orphan's demand and
-    whatever it might have been holding are invisible to it. Added: the orphan
-    cannot be given a verdict of its own either, so there is no longer a state in
-    which it looks half-planned. The BU's own 1000 is unaffected by any of it.
-    """
-    bu = _bu(db_session, "Mapped BU")
-    product = _product(db_session)
-    _stock(db_session, bu, product, 1000)
-
-    mapped, mapped_node = _customer(db_session, "Mapped Co", bu, AllocationPolicy.SOFT)
-    orphan, orphan_node = _customer(db_session, "Orphan Co", None, AllocationPolicy.SOFT)
-
-    line = _line(db_session, _well(db_session, mapped_node, "W-M"), product, 5000)
-    orphan_line = _line(
-        db_session, _well(db_session, orphan_node, "W-O"), product, 100
-    )
-    recompute_customer(db_session, mapped)
-    assert _status(line) == CoverageStatus.UNCOVERED
-
-    with pytest.raises(InventoryScopeMissing):
-        recompute_customer(db_session, orphan)
-    assert db_session.get(CoverageResult, orphan_line.id) is None
-
-    result = cross_customer_sharing(db_session, mapped)
-
-    assert result.donor_customer_ids == ()
-    (outcome,) = result.uncovered_lines
-    assert outcome.would_be_covered is False
-    # The mapped customer's own verdict is untouched by the orphan's existence.
-    assert _status(line) == CoverageStatus.UNCOVERED
 
 
 def test_recompute_well_entry_point_still_resolves_the_bu_quantity(db_session):
@@ -1144,50 +704,6 @@ def test_recompute_well_entry_point_still_resolves_the_bu_quantity(db_session):
 # --------------------------------------------------------------------------
 # 9. API route
 # --------------------------------------------------------------------------
-
-
-def test_cross_customer_sharing_route(db_session):
-    """GET /analysis/cross-customer-sharing serialises the analysis and, being a
-    read-only projection, leaves the persisted coverage answer untouched."""
-    from fastapi.testclient import TestClient
-
-    from app.db import get_db
-    from app.main import app
-
-    s = _sharing_scenario(db_session)
-    db_session.flush()
-    before = _coverage_snapshot(db_session)
-
-    def _override_get_db():
-        yield db_session
-
-    app.dependency_overrides[get_db] = _override_get_db
-    try:
-        client = TestClient(app)
-        resp = client.get(
-            "/analysis/cross-customer-sharing", params={"customer_id": s["hard_co"].id}
-        )
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["business_unit_name"] == "North"
-        assert body["donor_customer_ids"] == [s["soft_co"].id]
-        assert body["covered_by_sharing_count"] == 1
-        (line,) = body["uncovered_lines"]
-        assert line["would_be_covered"] is True
-        assert line["shared_quantity"] == 5000
-        assert line["contributions"][0]["from_customer_name"] == "Soft Co"
-        (surplus,) = body["product_surplus"]
-        assert surplus["shareable"] == 7000
-
-        missing = client.get(
-            "/analysis/cross-customer-sharing", params={"customer_id": "nope"}
-        )
-        assert missing.status_code == 404
-    finally:
-        app.dependency_overrides.clear()
-
-    # The GET wrote nothing.
-    assert _coverage_snapshot(db_session) == before
 
 
 # --------------------------------------------------------------------------
@@ -1458,20 +974,3 @@ def test_substitution_candidates_route_is_bu_scoped(db_session):
     finally:
         app.dependency_overrides.clear()
 
-
-def test_sharing_official_status_is_the_stored_verdict_not_a_hardcoded_label(
-    db_session,
-):
-    """Display-only fix (2026-08-12): each row names its ACTUAL verdict.
-
-    The panel used to print "Uncovered (customer-scoped)" on every row, which
-    misrepresented lines whose stored verdict was PendingApproval or
-    Unrecoverable. The label now comes verbatim from the line's CoverageResult.
-    """
-    s = _sharing_scenario(db_session)
-    result = cross_customer_sharing(db_session, s["hard_co"])
-    outcome = result.uncovered_lines[0]
-    stored = s["needy_line"].coverage_result
-    assert stored is not None
-    assert outcome.official_status == stored.status.value
-    assert "(customer-scoped)" not in outcome.official_status

@@ -12,12 +12,8 @@ import Breadcrumbs from "../components/Breadcrumbs";
 import CoverageBadge from "../components/CoverageBadge";
 import LoadError from "../components/LoadError";
 import ReasonText from "../components/ReasonText";
-import SharingPanel from "../components/SharingPanel";
 import { formatDay } from "./MrpSummary";
 import { DEMAND_PROFILES, DEMAND_STATUSES } from "../lib/enums";
-
-/** Line states for which a BU-sharing what-if is worth offering. */
-const SHARING_RELEVANT: CoverageStatus[] = ["Uncovered", "Unrecoverable"];
 
 const SUBSTITUTABLE_STATUSES: CoverageStatus[] = [
   "Uncovered",
@@ -235,17 +231,6 @@ export default function WellWorkspace() {
   const [well, setWell] = useState<WellDetail | null>(null);
   const [error, setError] = useState<unknown>(null);
 
-  /**
-   * The well's owning customer, needed to run the BU-sharing what-if.
-   *
-   * `GET /wells/{id}` does not carry `customer_id`, so it is resolved from the
-   * coverage grid, whose rows do (`CoverageGridRow.customer_id`). Called with no
-   * filters, so it returns the official stored verdicts and triggers no
-   * recompute. A failure here only means the sharing offer is not shown — it
-   * must never blank the well itself.
-   */
-  const [customerId, setCustomerId] = useState<string | null>(null);
-  const [sharingOpen, setSharingOpen] = useState(false);
 
   const reload = () => {
     if (!wellId) return;
@@ -253,19 +238,6 @@ export default function WellWorkspace() {
   };
 
   useEffect(reload, [wellId]);
-
-  useEffect(() => {
-    if (!wellId) return;
-    setCustomerId(null);
-    setSharingOpen(false);
-    api
-      .getCoverageGrid({})
-      .then((grid) => {
-        const row = grid.rows.find((r) => r.well_id === wellId);
-        setCustomerId(row?.customer_id ?? null);
-      })
-      .catch(() => setCustomerId(null));
-  }, [wellId]);
 
   if (error)
     return (
@@ -281,10 +253,6 @@ export default function WellWorkspace() {
         <p>Loading...</p>
       </div>
     );
-
-  const hasUncovered = well.demand_lines.some((l) =>
-    SHARING_RELEVANT.includes(l.coverage_status)
-  );
 
   return (
     <div>
@@ -314,48 +282,6 @@ export default function WellWorkspace() {
         currentStatus={well.demand_status}
         onChanged={reload}
       />
-
-      {/*
-        The planner discovers the uncovered line here, so the BU-sharing what-if
-        is offered here — but behind a click and never mixed into the table
-        above. The badge on this page is the official, customer-scoped verdict;
-        the what-if contradicts it by design, and letting the two share a surface
-        would turn a projection into a second verdict.
-      */}
-      {hasUncovered && customerId && (
-        <div className="share-offer">
-          {sharingOpen ? (
-            <>
-              <button
-                type="button"
-                className="btn-plain"
-                onClick={() => setSharingOpen(false)}
-              >
-                Hide the sharing what-if
-              </button>
-              <SharingPanel
-                customerId={customerId}
-                wellId={wellId}
-                title={`If inventory were shared within the Business Unit — ${well.name}`}
-              />
-            </>
-          ) : (
-            <>
-              <button
-                type="button"
-                className="btn-plain"
-                onClick={() => setSharingOpen(true)}
-              >
-                Could this be covered by sharing within the Business Unit?
-              </button>
-              <span className="share-offer-note">
-                A read-only projection that deliberately disagrees with the
-                official verdict above. Nothing is saved or reserved.
-              </span>
-            </>
-          )}
-        </div>
-      )}
 
       {/* Same demand lines twice, ONE visible at a time (CSS): the table on
           desktop, cards on narrow screens — where the table clipped the

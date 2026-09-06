@@ -9,16 +9,16 @@ class BusinessUnit(Base):
 
     A Business Unit is the OUTERMOST inventory boundary and it is never crossed,
     by any code path, under any circumstance -- not by coverage, not by the
-    substitution fall-through, not by the HARD/HYBRID assignment netting, and not
-    even by the cross-customer sharing ANALYSIS (see
-    app.engines.sharing.cross_customer_sharing, which is scoped to ONE BU by
-    construction and asserts it).
+    substitution fall-through, and not by the HARD/HYBRID assignment netting.
 
-    Customer is a second, INNER boundary: by default a customer's coverage is
-    computed against its own demand only, so customer B's demand can never move
-    customer A's verdict. That default is what `recompute_customer` implements and
-    it is deliberately not relaxed. The only thing allowed to reason across
-    customers is the read-only what-if analysis, and only within one BU.
+    It is also the UNIT OF ALLOCATION (product-owner ruling 2026-09-06, D01):
+    every in-scope demand line of every customer below it competes for one pool,
+    earliest ROS first, so what the BU has promised can never exceed what it
+    holds. Customer used to be a second, inner boundary and is not one any more --
+    what remains customer-private is ownership, not pooling: a customer's own
+    uploaded stock and an Oracle assignment are never drawn by anybody else. The
+    only thing allowed to reason across
+    Business Units is nothing at all.
 
     THE NAME IS UNIQUE, and it became so when the table became WRITEABLE
     -------------------------------------------------------------------

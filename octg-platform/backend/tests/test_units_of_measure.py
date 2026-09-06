@@ -119,7 +119,6 @@ NOT_A_MATERIAL_QUANTITY = {
     ("CoverageGridRowOut", "covered_line_count"),
     ("HorizonDemandOut", "current_line_count"),
     ("SupplyRiskOut", "unrecoverable_line_count"),
-    ("CrossCustomerSharingOut", "still_uncovered_count"),
     ("DemandLineListOut", "total"),
     ("DemandImportBatchOut", "row_count"),
     ("DemandImportBatchSummaryOut", "row_count"),
@@ -132,9 +131,6 @@ NOT_A_MATERIAL_QUANTITY = {
     # one here would label a cell nobody has validated. `unit_of_measure` on the
     # same model covers the PARSED `quantity`.
     ("DemandImportRowOut", "raw_quantity"),
-    # Free prose that mentions quantities inline, already rendered with their units
-    # by the engine that wrote them.
-    ("SharedLineOutcomeOut", "explanation"),
     # A boolean, despite the name.
     ("SubstitutionCandidateOut", "over_subscribed"),
     # A well's PLANNER-SET demand status (Planned / Budgeted / Confirmed) -- an
@@ -320,9 +316,6 @@ def test_the_walk_actually_finds_the_payloads_it_is_meant_to_guard():
         "InventoryPositionOut",
         "RunoutPointOut",
         "SubstitutionCandidateOut",
-        "SharedLineOutcomeOut",
-        "ProductSurplusOut",
-        "SharingContributionOut",
         "HorizonDemandOut",
         "SupplyRiskOut",
         # RENAMED from AllocationSummaryOut: the block now reports SOFT allocation

@@ -467,6 +467,7 @@ tbody tr:last-child td { border-bottom: none; }
 .row-changed td { background: var(--accent-soft); }
 .row-changed-worse td { background: var(--bad-soft); }
 .knock-on { font-size: var(--fs-caption); color: var(--warn-text); display: block; margin-top: 2px; }
+.other-customer { display: block; font-size: var(--fs-caption); color: var(--text-muted); margin-top: 2px; }
 .override-target { font-size: var(--fs-sm); color: var(--text-muted); }
 .override-value { font-variant-numeric: tabular-nums; }
 
@@ -1247,9 +1248,6 @@ td.empty { color: var(--text-faint); text-align: center; padding: 24px 12px; }
 .share-surplus-some { color: var(--ok); font-weight: 700; }
 .share-surplus-none { color: var(--text-faint); }
 
-.share-offer { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin: 0 0 20px; }
-.share-offer-note { font-size: var(--fs-caption); color: var(--text-muted); line-height: 1.5; }
-.share-offer .share-panel { align-self: stretch; margin-top: 8px; }
 
 .card-cta { padding: 10px 0 0; border-top: 1px solid var(--line-faint); margin-top: 4px; font-size: var(--fs-body); }
 .card-cta-note { display: block; font-size: var(--fs-caption); color: var(--text-muted); margin-top: 3px; line-height: 1.5; }

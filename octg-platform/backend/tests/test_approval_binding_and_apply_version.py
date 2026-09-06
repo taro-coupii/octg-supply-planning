@@ -65,7 +65,9 @@ def test_withdrawing_clears_the_basis(client_world):
 
 
 def _scenario_with_override(client, w):
-    sid = client.post("/scenarios", json={"name": "V", "customer_id": w.acme_id}).json()["id"]
+    sid = client.post(
+        "/scenarios", json={"name": "V", "business_unit_id": w.bu_id}
+    ).json()["id"]
     r = client.post(
         f"/scenarios/{sid}/overrides",
         json={

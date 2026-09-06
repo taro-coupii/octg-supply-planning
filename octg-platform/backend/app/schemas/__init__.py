@@ -156,7 +156,7 @@ class DemandLineOut(BaseModel):
 
 class WellOut(BaseModel):
     """`customer_id` is here so a well page can reach anything scoped by customer
-    -- notably the cross-customer sharing what-if -- without first pulling the
+    -- notably a scenario preview -- without first pulling the
     whole coverage grid to find out who owns the well. `planning_node_path` is the
     same breadcrumb the coverage grid serves, so the two screens agree."""
 
@@ -658,120 +658,12 @@ class ByItemAnalysisOut(BaseModel):
 
 
 # --------------------------------------------------------------------------
-# Cross-customer shared-inventory ANALYSIS (app.engines.sharing)
 #
 # Every model below describes a READ-ONLY what-if projection. Nothing in this
 # response has been persisted: the official coverage verdict stays
 # customer-scoped and is written only by app.engines.coverage.recompute_customer.
 # --------------------------------------------------------------------------
 
-
-class SharingContributionOut(BaseModel):
-    """One donor customer's INDICATIVE contribution.
-
-    Indicative, not authoritative: on-hand inventory carries a Business Unit
-    dimension and no customer dimension, so there is no ground truth for whose
-    tonnage a given surplus unit is. The defensible number is
-    `ProductSurplusOut.shareable`; this split exists so a planner knows who to
-    call.
-    """
-
-    from_customer_id: str
-    from_customer_name: str
-    quantity: float
-    # The unit of the product this contribution is OF. A contribution only ever
-    # concerns the one product of its parent `SharedLineOutcomeOut`, so it is that
-    # product's unit and never a mixture.
-    unit_of_measure: UnitOfMeasure
-
-    class Config:
-        from_attributes = True
-
-
-class SharedLineOutcomeOut(BaseModel):
-    """What BU-level sharing would (or would not) do for one uncovered line."""
-
-    demand_line_id: str
-    well_id: str
-    well_name: str
-    product_id: str
-    product_description: str | None
-    quantity: float
-    # Labels `quantity`, `shared_quantity` AND `shortfall`, all three of which are
-    # quantities of `product_id` -- one line, one product, one unit.
-    unit_of_measure: UnitOfMeasure
-    ros_date: datetime
-    official_status: str
-    would_be_covered: bool
-    shared_quantity: float
-    shortfall: float
-    contributions: list[SharingContributionOut] = []
-    explanation: str
-
-    class Config:
-        from_attributes = True
-
-
-class ProductSurplusOut(BaseModel):
-    """BU-level surplus position for one product.
-
-    `shareable = max(0, bu_on_hand - committed_in_bu)`, where `committed_in_bu`
-    is the quantity every customer in the BU is committed to by its own in-scope
-    demand (drawn quantity, plus assignment-reserved quantity under HARD and
-    HYBRID). Only this remainder is offered for sharing -- inventory already
-    committed to another customer's demand is never taken away from it.
-
-    `shareable` may be 0 even when several customers look comfortable: each
-    customer's official coverage is computed against the FULL BU quantity, so a
-    BU can have promised more than it holds.
-    """
-
-    product_id: str
-    product_description: str | None
-    bu_on_hand: float
-    committed_in_bu: float
-    shareable: float
-    # Labels all three figures. This model is per product, so no aggregation across
-    # units happens anywhere in the sharing analysis -- `shareable` is deliberately
-    # never rolled into a single headline number, which is what would have needed a
-    # per-unit breakdown.
-    unit_of_measure: UnitOfMeasure
-
-    class Config:
-        from_attributes = True
-
-
-class CrossCustomerSharingOut(BaseModel):
-    """Result of GET /analysis/cross-customer-sharing.
-
-    Answers "which of this customer's uncovered demand could be covered if
-    inventory were shared across customers within the same Business Unit?".
-    Sharing is intra-BU only; stock in any other BU is never offered, whatever
-    its quantity. `business_unit_id` NULL means the customer is unmapped and
-    therefore isolated -- no sharing is evaluated and `notes` says so.
-    """
-
-    customer_id: str
-    customer_name: str
-    business_unit_id: str | None
-    business_unit_name: str | None
-    donor_customer_ids: list[str] = []
-    uncovered_lines: list[SharedLineOutcomeOut] = []
-    product_surplus: list[ProductSurplusOut] = []
-    covered_by_sharing_count: int = 0
-    still_uncovered_count: int = 0
-    notes: list[str] = []
-
-    class Config:
-        from_attributes = True
-
-
-# --------------------------------------------------------------------------
-# Phase 5 -- Demand List, Coverage Workspace, Executive Dashboard, Excel import
-#
-# The demand-import enums are imported here rather than at the top of the module
-# so this block stays self-contained.
-# --------------------------------------------------------------------------
 
 from app.models import (  # noqa: E402
     DemandImportBatchStatus,
@@ -1729,7 +1621,7 @@ class ImportConflictPreviewOut(BaseModel):
     Nothing in here has been persisted, and requesting it approves nothing.
     `is_what_if` is serialised explicitly so the screen can label the panel without
     inferring anything -- the same rule the scenario preview and the cross-customer
-    sharing panel follow. A figure from this response must never be rendered as the
+    scenario preview follow. A figure from this response must never be rendered as the
     coverage verdict.
 
     Computed by `app.engines.coverage.compute_customer_coverage` run twice, through
@@ -1784,7 +1676,7 @@ class ImportConflictPreviewOut(BaseModel):
 #   * ScenarioImpactOut and everything under it describes a READ-ONLY WHAT-IF.
 #     Nothing in it has been persisted. `is_what_if` is serialised explicitly so
 #     the frontend can label the panel without inferring anything, exactly as the
-#     cross-customer sharing panel is labelled. A figure from that response must
+#     scenario preview is labelled. A figure from that response must
 #     never be shown as the official coverage verdict.
 #
 # Own import block, appended, following the pattern already used above.
@@ -1848,7 +1740,10 @@ class ScenarioIn(BaseModel):
     and `created_by` is attribution only, never access control."""
 
     name: str
-    customer_id: str
+    #: The Business Unit this scenario plans for -- the scope coverage is
+    #: allocated at (D01), and therefore the only scope it can be previewed and
+    #: applied at.
+    business_unit_id: str
     description: str | None = None
     created_by: str | None = None
 
@@ -1876,8 +1771,10 @@ class ScenarioSummaryOut(BaseModel):
     id: str
     name: str
     description: str | None
-    customer_id: str
-    customer_name: str
+    #: The scope a scenario is previewed and applied at (D01). It was a customer
+    #: until the pool became Business-Unit-wide.
+    business_unit_id: str
+    business_unit_name: str | None
     status: ScenarioStatus
     #: "On behalf of" text typed at creation. The actor is `created_by_user_*`,
     #: recorded server-side from the authenticated user (F09).
@@ -1933,6 +1830,11 @@ class LineCoverageChangeOut(BaseModel):
     ros_date_after: datetime
     changed: bool
     directly_overridden: bool
+    #: WHOSE it is. A scenario preview spans the whole Business Unit (D01), so a
+    #: change may belong to a customer the planner did not name. A knock-on onto a
+    #: neighbour is never shown anonymously.
+    customer_id: str | None = None
+    customer_name: str | None = None
 
     class Config:
         from_attributes = True
@@ -1944,6 +1846,11 @@ class WellCoverageChangeOut(BaseModel):
     status_before: str | None
     status_after: str | None
     changed: bool
+    #: WHOSE it is. A scenario preview spans the whole Business Unit (D01), so a
+    #: change may belong to a customer the planner did not name. A knock-on onto a
+    #: neighbour is never shown anonymously.
+    customer_id: str | None = None
+    customer_name: str | None = None
 
     class Config:
         from_attributes = True
@@ -2072,8 +1979,6 @@ class ScenarioImpactOut(BaseModel):
     scenario_id: str
     scenario_name: str
     scenario_status: str
-    customer_id: str
-    customer_name: str
     business_unit_id: str | None
     business_unit_name: str | None
     override_count: int

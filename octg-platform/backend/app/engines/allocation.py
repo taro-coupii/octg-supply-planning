@@ -71,7 +71,7 @@ Residual-pool accounting
 ------------------------
 `allocate_detailed` returns the free pool left after the pass, which the
 coverage engine hands to the substitution fall-through and
-`app.engines.sharing` uses to define surplus. Three rules make that number
+`app.engines.surplus` uses to define surplus. Three rules make that number
 honest:
 
   * Assigned quantity is a CARVE-OUT of on_hand, never additive. The
@@ -132,7 +132,7 @@ What that means per policy, and why HARD is the interesting one
           The spirit of HARD is preserved rather than bent: what HARD refuses is a
           top-up from the SHARED pool, i.e. steel that is not this line's. The
           customer's own property is not shared with anybody -- it cannot even be
-          offered to a neighbour (see `app.engines.sharing`) -- so drawing on it
+          offered to a neighbour -- so drawing on it
           takes nothing from anyone and creates no contention for a reservation to
           resolve. HARD's no-pool-top-up rule is untouched: `remaining_pool` is
           still the unassigned company remainder and no hard line ever touches it.
@@ -212,6 +212,22 @@ class AllocationOutcome:
     # residual company pool may be drawn by a SUBSTITUTE for any line of this
     # customer, while this residual is the customer's own property of THIS product.
     remaining_customer_owned: float = 0.0
+    # BU-WIDE PASS ONLY (see `allocate_business_unit`). `remaining_pool` above is
+    # the ONE shared unassigned pool of the whole Business Unit; these two say what
+    # is left of each customer's PRIVATE tiers, which the substitution fall-through
+    # must offer to that customer's lines and to no others. Empty for the
+    # single-customer helpers, whose residuals are the scalars above.
+    remaining_customer_owned_by_customer: dict[str, float] = field(default_factory=dict)
+    remaining_assignment_block_by_customer: dict[str, float] = field(
+        default_factory=dict
+    )
+    # The part of `consumed_from_pool` that came from a SOFT customer's own pooled
+    # assignment block rather than from the shared Business-Unit pool. Reported
+    # separately for ONE reason: when a substitute later takes the line and its
+    # own-product draw is released (C-17), each quantity has to go back to the tier
+    # it came from -- a reservation returned to the shared pool would be a
+    # reservation the platform had quietly released.
+    consumed_from_assignment_block: dict[str, float] = field(default_factory=dict)
 
     def drawn(self, line_id: str) -> float:
         """Total quantity this line actually consumed: customer-owned + assignment
@@ -289,6 +305,136 @@ def allocate_detailed(
     if policy == AllocationPolicy.HYBRID:
         return _allocate_hybrid(lines, on_hand_qty, assigned, customer_owned)
     raise ValueError(f"Unknown allocation policy: {policy!r}")
+
+
+def allocate_business_unit(
+    lines,
+    company_on_hand: float,
+    total_assigned: float,
+    assigned_by_line: dict[str, float],
+    assignment_block_by_customer: dict[str, float],
+    customer_owned_by_customer: dict[str, float],
+    policy_by_customer: dict[str, AllocationPolicy],
+    customer_of_line: dict[str, str],
+) -> AllocationOutcome:
+    """Allocate ONE product's Business-Unit stock across the in-scope demand of
+    EVERY customer in that Business Unit, in one pass.
+
+    THE CHANGE THIS FUNCTION IS (product-owner ruling 2026-09-06, D01)
+    -----------------------------------------------------------------
+    Until this existed, each customer was allocated against the WHOLE Business
+    Unit quantity independently, so two customers could each be told the same
+    6,000 metres were theirs and the sum of the promises exceeded the steel. The
+    unassigned pool is now contested ONCE, earliest-ROS-first, across the whole
+    Business Unit -- so what the BU has promised can never exceed what it holds.
+
+    Nothing else about allocation changes. The three tiers, their order, the
+    partial-consumption rule and each policy's meaning are exactly as the
+    per-customer helpers above implement them, and the ownership walls are kept by
+    construction rather than by convention:
+
+      1. CUSTOMER-OWNED (`customer_owned_by_customer`) -- keyed by customer, so a
+         line can only ever draw its own customer's property. Never shared.
+      2. ORACLE ASSIGNMENT -- keyed by LINE for HARD/HYBRID, so an assignment is
+         drawable only by the line it names. For a SOFT customer it is keyed by
+         CUSTOMER instead (`assignment_block_by_customer`): soft allocation means
+         "do not tie my steel to specific wells of MINE", and that is exactly what
+         the per-customer pass did (it ignored its own assignments and left that
+         quantity in its own pool) -- but the steel still belongs to that customer
+         and no neighbour may take it.
+      3. THE SHARED UNASSIGNED POOL -- `company_on_hand` less EVERY assignment in
+         the Business Unit (`total_assigned`, including assignments on lines this
+         pass does not evaluate: reserved steel is never free pool). This is the
+         one tier that crosses the customer line, and the only one that does.
+
+    HARD lines never touch tier 3, exactly as before, and their assignment is
+    recorded as drawn only when it covers the line's whole remaining requirement --
+    also as before. HYBRID and SOFT draw partially and the quantity is genuinely
+    spent, which is what makes the trade-off auditable.
+
+    ORDERING: earliest ROS first across the WHOLE Business Unit, ties broken by the
+    caller's order (`app.engines.coverage` sorts by `(ros_date, id)`, so the total
+    order is deterministic and does not depend on which customer a line belongs
+    to). The owner rejected a customer-priority ordering; urgency decides.
+    """
+    shared_pool = max(0.0, company_on_hand - max(0.0, total_assigned))
+    owned = {c: max(0.0, q) for c, q in customer_owned_by_customer.items()}
+    block = {c: max(0.0, q) for c, q in assignment_block_by_customer.items()}
+    # WHAT PHYSICALLY EXISTS, spent alongside the entitlements above.
+    #
+    # A reservation is an ENTITLEMENT to company steel, not steel of its own, and
+    # Oracle can hold more of them than the Business Unit has metres -- a scenario
+    # assignment override can invent the same state deliberately. Without this
+    # counter the entitlements would each be honoured in full and the Business Unit
+    # would promise what it does not hold, which is the very thing this pass
+    # exists to prevent (D01). Customer-owned steel is NOT counted here: it is the
+    # customer's own property and is not part of `company_on_hand` at all.
+    physical = max(0.0, company_on_hand)
+    outcome = AllocationOutcome(remaining_pool=shared_pool)
+
+    for line in sorted(lines, key=lambda l: l.ros_date):
+        customer_id = customer_of_line[line.id]
+        policy = policy_by_customer[customer_id]
+        need = line.quantity
+
+        from_owned = min(need, owned.get(customer_id, 0.0))
+        if from_owned > 0:
+            outcome.consumed_from_customer_owned[line.id] = from_owned
+            owned[customer_id] -= from_owned
+            need -= from_owned
+
+        if policy == AllocationPolicy.SOFT:
+            # The customer's own assignments, pooled across its own lines. Recorded
+            # as a POOL draw because that is what the per-customer pass called it:
+            # under SOFT this quantity was simply part of the customer's pool, and
+            # the reason text and the Executive channels are written against that
+            # meaning.
+            from_block = min(need, block.get(customer_id, 0.0), physical)
+            if from_block > 0:
+                outcome.consumed_from_pool[line.id] = from_block
+                outcome.consumed_from_assignment_block[line.id] = from_block
+                block[customer_id] -= from_block
+                physical -= from_block
+                need -= from_block
+        else:
+            available = min(max(0.0, assigned_by_line.get(line.id, 0.0)), physical)
+            if policy == AllocationPolicy.HARD:
+                # No partial record: an assignment that cannot close the line is
+                # still reserved to it, but nothing has been drawn. Unchanged.
+                if available >= need and need > 0:
+                    outcome.consumed_from_assignment[line.id] = need
+                    physical -= need
+                    need = 0.0
+            else:
+                from_assignment = min(available, need)
+                if from_assignment > 0:
+                    outcome.consumed_from_assignment[line.id] = from_assignment
+                    physical -= from_assignment
+                    need -= from_assignment
+
+        if policy != AllocationPolicy.HARD and need > 0:
+            from_pool = min(need, shared_pool, physical)
+            if from_pool > 0:
+                physical -= from_pool
+                outcome.consumed_from_pool[line.id] = (
+                    outcome.consumed_from_pool.get(line.id, 0.0) + from_pool
+                )
+                shared_pool -= from_pool
+                need -= from_pool
+
+        outcome.covered[line.id] = need <= 0
+
+    outcome.remaining_pool = max(0.0, shared_pool)
+    outcome.remaining_customer_owned_by_customer = {
+        c: max(0.0, q) for c, q in owned.items()
+    }
+    outcome.remaining_assignment_block_by_customer = {
+        c: max(0.0, q) for c, q in block.items()
+    }
+    outcome.remaining_customer_owned = sum(
+        outcome.remaining_customer_owned_by_customer.values()
+    )
+    return outcome
 
 
 def _unassigned_pool(lines: list[DemandLine], on_hand_qty: float, assigned: dict[str, float]) -> float:

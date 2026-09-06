@@ -21,7 +21,6 @@ import DemandImport from "./pages/DemandImport";
 import ExecutiveDashboard from "./pages/ExecutiveDashboard";
 import Administration from "./pages/Administration";
 import ProductWorkspace from "./pages/ProductWorkspace";
-import SharingAnalysis from "./pages/SharingAnalysis";
 import CustomerOwnedInventory from "./pages/CustomerOwnedInventory";
 import CompanyInventory from "./pages/CompanyInventory";
 import "@fontsource/barlow/400.css";
@@ -68,7 +67,6 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
           <Route path="/executive" element={<ExecutiveDashboard />} />
           <Route path="/admin" element={<Administration />} />
           <Route path="/products" element={<ProductWorkspace />} />
-          <Route path="/analysis/sharing" element={<SharingAnalysis />} />
           <Route
             path="/customer-owned-inventory"
             element={<CustomerOwnedInventory />}

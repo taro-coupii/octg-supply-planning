@@ -375,8 +375,8 @@ def test_remaining_pool_is_exact_after_a_chain_of_partial_draws(db_session):
     """`remaining_pool` never goes negative and never double-counts.
 
     Three lines, one 2500 pool, each taking `min(shortfall, pool)` in ROS order.
-    The residual is what the substitution fall-through and
-    app.engines.sharing's surplus both depend on, so it is asserted exactly.
+    The residual is what the substitution fall-through and the surplus report
+    both depend on, so it is asserted exactly.
     """
     _c, node = _customer(db_session, AllocationPolicy.SOFT)
     product = _product(db_session, on_hand_qty=2500)

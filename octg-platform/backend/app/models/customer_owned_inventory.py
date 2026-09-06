@@ -104,7 +104,8 @@ class CustomerOwnedInventory(Base):
 
     IT CAN NEVER BE OFFERED TO ANOTHER CUSTOMER
     ------------------------------------------
-    A boundary TIGHTER than the Business Unit boundary. `app.engines.sharing`
+    A boundary TIGHTER than the Business Unit boundary, and the one wall that
+    survived the pool being shared across the BU (D01). The surplus report
     answers "could another customer's surplus in this BU cover my gap"; this
     material is that customer's PROPERTY, so it is excluded from `shareable`
     entirely and in both directions. That exclusion is structural -- the sharing

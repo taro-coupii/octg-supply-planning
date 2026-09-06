@@ -165,7 +165,7 @@ def test_a_new_order_row_and_an_arrival_date_row_are_not_interchangeable(db_sess
     with pytest.raises(OverrideError, match="value_number was missing"):
         validate(
             row(field_name="new_order", value_date=when, target_business_unit_id=bu.id),
-            customer,
+            customer.business_unit,
         )
     # A new order with no date: no month to project it at.
     with pytest.raises(OverrideError, match="value_date was missing"):
@@ -175,19 +175,19 @@ def test_a_new_order_row_and_an_arrival_date_row_are_not_interchangeable(db_sess
                 value_number=5000,
                 target_business_unit_id=bu.id,
             ),
-            customer,
+            customer.business_unit,
         )
     # A new order with no Business Unit -- i.e. wearing an arrival_date row's shape.
     with pytest.raises(OverrideError, match="must state the Business Unit"):
         validate(
-            row(field_name="new_order", value_number=5000, value_date=when), customer
+            row(field_name="new_order", value_number=5000, value_date=when), customer.business_unit
         )
     # And the reverse: an arrival_date row may NOT carry a quantity, so it can never
     # be mistaken for a resize of a real PO.
     with pytest.raises(OverrideError, match="value_number must be empty"):
         validate(
             row(field_name="arrival_date", value_date=when, value_number=5000),
-            customer,
+            customer.business_unit,
         )
 
     # The well-formed row is accepted, so the refusals above are about shape rather
@@ -199,7 +199,7 @@ def test_a_new_order_row_and_an_arrival_date_row_are_not_interchangeable(db_sess
             value_date=when,
             target_business_unit_id=bu.id,
         ),
-        customer,
+        customer.business_unit,
     )
 
 
@@ -227,7 +227,7 @@ def test_a_hypothetical_order_of_nothing_is_refused(db_session):
                     value_number=bad,
                     value_date=datetime.utcnow() + timedelta(days=90),
                 ),
-                customer,
+                customer.business_unit,
             )
 
 
@@ -256,7 +256,7 @@ def test_a_hypothetical_order_cannot_be_placed_by_another_business_unit(db_sessi
                 value_number=5000,
                 value_date=datetime.utcnow() + timedelta(days=90),
             ),
-            customer,
+            customer.business_unit,
         )
 
 
@@ -272,7 +272,7 @@ def test_the_resolver_keeps_the_two_fields_in_separate_members(db_session):
     _po_arrival_override(db_session, scenario, product, arrives_in_days=50)
     _new_order_override(db_session, scenario, product, 5000, arrives_in_days=90)
 
-    resolver = ScenarioOverrides(scenario.overrides, customer)
+    resolver = ScenarioOverrides(scenario.overrides, customer.business_unit)
 
     # The arrival-date side sees ONLY the date, and does not see the quantity.
     assert resolver.po_arrival_product_ids() == frozenset({product.id})
@@ -299,7 +299,7 @@ def test_several_hypothetical_orders_on_one_product_are_all_kept(db_session):
     _new_order_override(db_session, scenario, product, 2000, arrives_in_days=90)
     _new_order_override(db_session, scenario, product, 3000, arrives_in_days=180)
 
-    resolver = ScenarioOverrides(scenario.overrides, customer)
+    resolver = ScenarioOverrides(scenario.overrides, customer.business_unit)
     orders = resolver.hypothetical_orders(product.id)
 
     assert [q for q, _d in orders] == [2000, 3000], (

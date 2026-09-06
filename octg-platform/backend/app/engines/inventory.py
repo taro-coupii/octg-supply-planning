@@ -2,7 +2,7 @@
 decided.
 
 Every consumer of an on-hand quantity (the coverage engine, the substitution
-fall-through's availability seed, the cross-customer sharing analysis) resolves
+fall-through's availability seed, the surplus report) resolves
 it through `on_hand_for` / `on_hand_map`. There is no second reader: a second
 reader is a second policy, and a second policy is how a global scalar leaks
 across the boundary.
@@ -82,7 +82,7 @@ WHY THE SPLIT IS A TYPE AND NOT A SECOND FLOAT
 `on_hand_map` returns `dict[str, float]` and means COMPANY-OWNED ONLY -- it reads
 `InventoryOnHand`, which is Oracle's projection of OUR steel, and its meaning has
 not changed by one metre. Several callers legitimately want exactly that (the
-sharing analysis's surplus definition, which must never offer somebody else's
+surplus report's definition, which must never offer somebody else's
 property) or want a bare total across BUs (MRP).
 
 Allocation needs the SPLIT, and the failure mode this codebase keeps finding is a
@@ -258,7 +258,7 @@ def on_hand_map(
     """`on_hand_for` in bulk: {product_id: COMPANY-OWNED qty} for `product_ids`.
 
     COMPANY-OWNED ONLY -- see `on_hand_for`. This is the right function for the
-    surplus definition in `app.engines.sharing` (customer-owned stock must never be
+    surplus definition in `app.engines.surplus` (customer-owned stock must never be
     offered to a neighbour) and the wrong one for deciding coverage, which needs the
     ownership split from `ownership_pool_map`.
 

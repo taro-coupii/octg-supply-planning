@@ -1039,29 +1039,36 @@ def test_hawk_07_is_uncovered_with_a_recoverable_mrp_row(seeded):
     assert hawk_rows[0].lead_time.modelled is True
 
 
-def test_gannet_11_is_still_coverable_via_bu_sharing(seeded):
-    """The sharing analysis still finds Norheim Energy's surplus for Gannet-11."""
-    from app.engines.sharing import cross_customer_sharing
+def test_the_seeded_business_unit_never_promises_more_steel_than_it_holds(seeded):
+    """The D01 invariant, asserted against the shipped demo data.
 
-    hard_customer = (
-        seeded.query(Customer).filter(Customer.name == "Vestfjord Petroleum").one()
-    )
-    analysis = cross_customer_sharing(seeded, hard_customer)
-    coverable = {
-        line.well_name for line in analysis.uncovered_lines if line.would_be_covered
-    }
-    assert "Well Gannet-11" in coverable
-    gannet = next(
-        line for line in analysis.uncovered_lines if line.well_name == "Well Gannet-11"
-    )
-    assert gannet.would_be_covered is True
-    assert gannet.shared_quantity == 5000.0
-    assert gannet.shortfall == 0.0
-    # The donor is Norheim Energy's surplus, inside BU North Sea Operations.
-    donor = (
-        seeded.query(Customer).filter(Customer.name == "Norheim Energy").one()
-    )
-    assert donor.id in analysis.donor_customer_ids
+    Replaces `test_gannet_11_is_still_coverable_via_bu_sharing`, which pinned the
+    cross-customer sharing what-if: "could a neighbour's surplus cover this?".
+    That question existed because each customer was judged against the whole
+    Business Unit's stock independently, and the demo database was the proof --
+    49,240 metres were promised twice across its two customers. The pool is
+    divided once now, so the surplus has already gone to whoever needed it
+    soonest and the honest assertion is that nothing is promised twice.
+    """
+    from collections import defaultdict
+
+    from app.models import CoverageResult, InventoryOnHand
+
+    drawn = defaultdict(float)
+    for result in seeded.query(CoverageResult).all():
+        product_id = result.fulfilled_by_product_id or result.demand_line.product_id
+        drawn[product_id] += result.drawn_company or 0.0
+
+    for product_id, promised in drawn.items():
+        rows = (
+            seeded.query(InventoryOnHand)
+            .filter(InventoryOnHand.product_id == product_id)
+            .all()
+        )
+        on_hand = sum(max(0.0, r.quantity or 0.0) for r in rows)
+        assert promised <= on_hand + 1e-6, (
+            f"product {product_id}: {promised:g} promised out of {on_hand:g} held"
+        )
 
 
 def test_substitution_success_is_reachable_and_attributed_to_the_substitute(seeded):

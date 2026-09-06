@@ -1009,10 +1009,20 @@ def test_pool_is_allocated_by_line_level_ros_not_by_well_processing_order(db_ses
     assert late.coverage_result.status == CoverageStatus.UNCOVERED
 
 
-def test_pooling_stops_at_the_customer_boundary(db_session):
-    """Pool scope is the CUSTOMER. Customer B's demand must never change
-    customer A's coverage -- that would leak across the BU -> Customer boundary
-    and make a planner's own coverage unpredictable from data they can see."""
+def test_pooling_spans_the_business_unit_and_the_earliest_ros_wins(db_session):
+    """Pool scope is the BUSINESS UNIT (product-owner ruling 2026-09-06, D01).
+
+    This test asserted the opposite -- that a neighbour's demand could never move
+    your coverage -- and that separation is exactly what let one Business Unit
+    promise the same steel to two customers. Urgency decides now: the earlier ROS
+    takes the shelf whoever owns it, and the loser is short by what the Business
+    Unit genuinely does not have.
+
+    Two things a reader should not mistake this for. It is NOT a widening of the
+    BUSINESS UNIT boundary, which is still absolute. And it does not touch the
+    ownership walls inside the pool: a customer's own uploaded stock and an Oracle
+    assignment stay private -- see tests/test_bu_wide_allocation.py.
+    """
     _c1, node1 = _make_customer(db_session, name="Cust One")
     _c2, node2 = _make_customer(db_session, name="Cust Two")
     product = _make_product(db_session, on_hand_qty=5000)
@@ -1022,15 +1032,23 @@ def test_pooling_stops_at_the_customer_boundary(db_session):
     recompute_well(db_session, well_1)
     assert line_1.coverage_result.status == CoverageStatus.COVERED
 
-    # A second customer piles 4000 of demand onto the same product with an
-    # EARLIER ROS. Customer One's coverage must not move.
+    # A second customer piles 4000 of demand onto the same product with an EARLIER
+    # ROS. It is more urgent, so it takes the steel.
     well_2 = _well(db_session, node2, "Well Sep-2")
     line_2 = _line(db_session, well_2, product, quantity=4000, days_out=FAR_ROS_DAYS - 50)
     recompute_well(db_session, well_2)
 
     assert line_2.coverage_result.status == CoverageStatus.COVERED
+    # One recompute re-divided the whole Business Unit, so Cust One's stored
+    # verdict is already correct -- it does not wait for a recompute of its own.
+    assert line_1.coverage_result.status == CoverageStatus.UNCOVERED
+    # 1000 of the 5000 was left and it was genuinely drawn, so only 3000 needs
+    # ordering (the F04 net position).
+    assert line_1.coverage_result.drawn_company == 1000
+    assert line_1.coverage_result.residual == 3000
+
     recompute_well(db_session, well_1)
-    assert line_1.coverage_result.status == CoverageStatus.COVERED
+    assert line_1.coverage_result.status == CoverageStatus.UNCOVERED
 
 
 def test_recompute_advances_computed_at(db_session):

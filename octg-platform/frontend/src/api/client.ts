@@ -744,10 +744,10 @@ export const api = {
   // getScenarioPreview is a READ-ONLY what-if. Its numbers must never be
   // rendered as the official coverage verdict — see ScenarioImpact.is_what_if.
   getOverrideFields: () => getJSON<OverrideFields>("/scenarios/override-fields"),
-  getScenarios: (customerId?: string) =>
+  getScenarios: (businessUnitId?: string) =>
     getJSON<ScenarioSummary[]>(
-      customerId
-        ? `/scenarios?customer_id=${encodeURIComponent(customerId)}`
+      businessUnitId
+        ? `/scenarios?business_unit_id=${encodeURIComponent(businessUnitId)}`
         : "/scenarios"
     ),
   createScenario: (body: ScenarioInput) =>
@@ -871,16 +871,6 @@ export const api = {
       )}/template`
     ),
 
-  // ---- Cross-customer sharing (read-only what-if) ----
-  // Deliberately DISAGREES with the official customer-scoped coverage verdict.
-  // Never render its output as the official badge — see CrossCustomerSharing.
-  getCrossCustomerSharing: (customerId: string) =>
-    getJSON<CrossCustomerSharing>(
-      `/analysis/cross-customer-sharing?customer_id=${encodeURIComponent(
-        customerId
-      )}`
-    ),
-
   // ---- Demand List / Coverage Workspace / Demand Import ----
   getDemandLines: (params: DemandLineQuery) =>
     getJSON<DemandLineListResponse>(`/demand-lines${demandLineQuery(params)}`),
@@ -955,7 +945,7 @@ export const api = {
 //                                  persisted. `is_what_if` is sent by the
 //                                  backend so the UI can label it without
 //                                  inferring anything, exactly as the
-//                                  cross-customer sharing panel is labelled. A
+//                                  scenario preview is labelled. A
 //                                  figure from it must never be shown as the
 //                                  official coverage verdict.
 //
@@ -1035,8 +1025,9 @@ export interface ScenarioSummary {
   id: string;
   name: string;
   description: string | null;
-  customer_id: string;
-  customer_name: string;
+  /** The scope a scenario is previewed and applied at. */
+  business_unit_id: string;
+  business_unit_name: string | null;
   status: ScenarioStatus;
   /** "On behalf of" text typed at creation; the actor is created_by_user_*. */
   created_by: string | null;
@@ -1061,7 +1052,9 @@ export interface ScenarioDetail extends ScenarioSummary {
 
 export interface ScenarioInput {
   name: string;
-  customer_id: string;
+  /** The Business Unit this scenario plans for — the scope coverage is allocated
+   * at, and therefore the only scope it can be previewed and applied at. */
+  business_unit_id: string;
   description?: string | null;
   created_by?: string | null;
 }
@@ -1093,6 +1086,10 @@ export interface LineCoverageChange {
   changed: boolean;
   /** False for a line that moved as a knock-on effect of someone else's change. */
   directly_overridden: boolean;
+  /** Whose line this is. A preview spans the whole Business Unit, so a change can
+   * belong to a customer this scenario never names. */
+  customer_id: string | null;
+  customer_name: string | null;
 }
 
 export interface WellCoverageChange {
@@ -1101,6 +1098,9 @@ export interface WellCoverageChange {
   status_before: string | null;
   status_after: string | null;
   changed: boolean;
+  /** Whose well this is — see LineCoverageChange. */
+  customer_id: string | null;
+  customer_name: string | null;
 }
 
 export interface MrpRowChange {
@@ -1575,7 +1575,7 @@ export interface ImportConflictWellChange {
  *
  * `is_what_if` is always true and must be rendered as such. No number in here is
  * the coverage verdict — the same rule the scenario preview and the cross-customer
- * sharing panel follow.
+ * scenario preview follow.
  */
 export interface ImportConflictPreview {
   batch_id: string;
@@ -1665,7 +1665,7 @@ export interface DemandImportApplyResult {
 //
 // `allocation_policy` is the rule by which that customer's coverage is judged,
 // and the Business Unit is the hard inventory boundary that is never crossed —
-// not even by the cross-customer sharing what-if.
+// and it is pooled across every customer of the BU, earliest need first.
 // ---------------------------------------------------------------------------
 
 export interface BusinessUnitOut {
@@ -2089,91 +2089,6 @@ export interface ExecutiveQuery {
   profile?: string[];
 }
 
-// ---------------------------------------------------------------------------
-// Cross-customer sharing  (GET /analysis/cross-customer-sharing)
-//
-// A READ-ONLY WHAT-IF that deliberately disagrees with the official coverage
-// badge. It answers "could this customer's uncovered demand be met if inventory
-// were shared across customers inside the same Business Unit?" — a question the
-// official, customer-scoped verdict does not and must not answer. Rendering it
-// indistinguishably from the official verdict would undo the reason the verdict
-// is customer-scoped at all, so every screen showing it labels it a projection
-// with the same `.whatif-banner` / `.whatif-tag` vocabulary as Scenarios.
-//
-// Two traps:
-//
-//   * `contributions` may legitimately be EMPTY while `would_be_covered` is
-//     true. That means the surplus is BU-level unallocated stock, not a transfer
-//     from a named customer. `explanation` says exactly that — render it rather
-//     than an empty donor list.
-//   * `shared_quantity` is the binding number. The contribution split is an
-//     INDICATIVE hint about who to call, not an instruction.
-//
-// The BU is a hard boundary: stock in another Business Unit is never offered,
-// whatever its quantity.
-// ---------------------------------------------------------------------------
-
-export interface SharingContribution {
-  from_customer_id: string;
-  from_customer_name: string;
-  quantity: number;
-}
-
-export interface SharingUncoveredLine {
-  demand_line_id: string;
-  well_id: string;
-  well_name: string;
-  product_id: string;
-  product_description: string | null;
-  quantity: number;
-  ros_date: string;
-  /** The official verdict, e.g. "Uncovered (customer-scoped)". Unchanged by this. */
-  official_status: string;
-  /** The PROJECTION. Never render as the official badge. */
-  would_be_covered: boolean;
-  /** The binding figure. */
-  shared_quantity: number;
-  shortfall: number;
-  /** Indicative only, and legitimately empty for BU-level unallocated stock. */
-  contributions: SharingContribution[];
-  /** Full sentence written for a planner. Render verbatim. */
-  explanation: string;
-}
-
-export interface ProductSurplus {
-  product_id: string;
-  product_description: string | null;
-  bu_on_hand: number;
-  committed_in_bu: number;
-  shareable: number;
-}
-
-export interface CrossCustomerSharing {
-  customer_id: string;
-  customer_name: string;
-  business_unit_id: string | null;
-  business_unit_name: string | null;
-  /** Other customers in the same BU holding shareable stock. May be empty. */
-  donor_customer_ids: string[];
-  uncovered_lines: SharingUncoveredLine[];
-  product_surplus: ProductSurplus[];
-  covered_by_sharing_count: number;
-  still_uncovered_count: number;
-  notes: string[];
-}
-
-// ---------------------------------------------------------------------------
-// Customer-owned inventory  (GET/POST /customer-owned-inventory/{customer_id})
-//
-// This is the ONE inventory table this platform itself owns via upload —
-// on-hand, assignments and on-order are all read-only Oracle projections.
-// `has_uploaded` is the whole point and must be branched on before anything
-// else:
-//   has_uploaded=false                 -> no upload has ever happened. Never 0.
-//   has_uploaded=true, positions=[]     -> uploaded, and genuinely owns nothing.
-//   has_uploaded=true, positions=[...]  -> render the table.
-// Consumed FIRST for its product, ahead of company stock and any Oracle
-// assignment, and never offered to another customer.
 // ---------------------------------------------------------------------------
 
 export interface CustomerOwnedPosition {

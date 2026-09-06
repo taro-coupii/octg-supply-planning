@@ -1474,7 +1474,7 @@ def _seed_scenarios(db, now, customer, hawk_line, osprey_line, tbg, bu_north):
             "string. Reducing the 13CR tubing requirement from 9000 to 3000 fits "
             "the tubing left in the pool after Eagle-01 and Osprey-09."
         ),
-        customer_id=customer.id,
+        business_unit_id=customer.business_unit_id,
         status=ScenarioStatus.DRAFT,
         created_by="demo.planner",
     )
@@ -1485,7 +1485,7 @@ def _seed_scenarios(db, now, customer, hawk_line, osprey_line, tbg, bu_north):
             "of the unrecoverable bucket? (It is unrecoverable today because the "
             "ROS sits inside the 6.5-month 13CR lead time.)"
         ),
-        customer_id=customer.id,
+        business_unit_id=customer.business_unit_id,
         status=ScenarioStatus.REVIEW,
         created_by="demo.planner",
     )
@@ -1545,7 +1545,7 @@ def _seed_supply_scenario(db, hard_customer, merlin_well, merlin_product):
             "projection, so the agreed change has to be raised in Oracle and "
             "synced back."
         ),
-        customer_id=hard_customer.id,
+        business_unit_id=hard_customer.business_unit_id,
         status=ScenarioStatus.DISCUSSION,
         created_by="demo.buyer",
     )

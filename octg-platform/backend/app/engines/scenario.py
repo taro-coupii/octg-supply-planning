@@ -16,7 +16,7 @@ nothing else. Applying is a separate module on purpose -- see below.
 
 It writes NOTHING
 -----------------
-Same four layers as `app.engines.sharing`, deliberately copied rather than
+Four layers, deliberately explicit rather than
 reinvented:
 
   1. It never imports the persisting code path. `recompute_customer`,
@@ -80,9 +80,12 @@ from datetime import date, datetime
 from sqlalchemy.orm import Session, object_session
 
 from app.engines.coverage import (
+    BusinessUnitCoverage,
     CustomerCoverage,
+    compute_business_unit_coverage,
     compute_customer_coverage,
 )
+from app.engines.inventory import scoped_customer_ids
 from app.engines.executive import quantity_by_unit
 from app.engines.mrp import (
     LineNet,
@@ -97,6 +100,7 @@ from app.engines.overrides import (
 )
 from app.models import (
     CoverageStatus,
+    Customer,
     PlanningNode,
     Product,
     ScenarioStatus,
@@ -146,6 +150,11 @@ class LineCoverageChange:
     #: pulling one line's ROS earlier can uncover a different line entirely. That
     #: second-order effect is the most valuable thing this screen shows.
     directly_overridden: bool
+    #: WHOSE it is. A preview spans the whole Business Unit (D01), so a change may
+    #: belong to a customer the planner did not name -- and a knock-on onto a
+    #: neighbour must never be shown anonymously.
+    customer_id: str | None = None
+    customer_name: str | None = None
 
 
 @dataclass(frozen=True)
@@ -157,6 +166,11 @@ class WellCoverageChange:
     status_before: str | None
     status_after: str | None
     changed: bool
+    #: WHOSE it is. A preview spans the whole Business Unit (D01), so a change may
+    #: belong to a customer the planner did not name -- and a knock-on onto a
+    #: neighbour must never be shown anonymously.
+    customer_id: str | None = None
+    customer_name: str | None = None
 
 
 @dataclass(frozen=True)
@@ -312,15 +326,13 @@ class ScenarioImpact:
 
     `is_what_if` is always True and is serialised deliberately: the frontend must
     be able to label this panel unmistakably without inferring anything, exactly
-    as the cross-customer sharing panel is labelled. A number from this object
+    unmistakably. A number from this object
     must never be presented as the coverage verdict.
     """
 
     scenario_id: str
     scenario_name: str
     scenario_status: str
-    customer_id: str
-    customer_name: str
     business_unit_id: str | None
     business_unit_name: str | None
 
@@ -397,17 +409,22 @@ def assert_mutable(scenario) -> None:
 
 
 def assert_target_in_scope(db: Session, scenario, override) -> None:
-    """Refuse an override that points outside the scenario's own customer.
+    """Refuse an override that points outside the scenario's own Business Unit.
 
     Covers both demand targets: a DEMAND_LINE override's line and a WELL
     override's well.
 
-    A scenario is scoped to ONE customer because coverage is computed at that
-    scope. An override naming another customer's demand line would be silently
-    ignored by the preview (the pool query never sees that line) while sitting in
-    the scenario looking effective -- and `apply_to_base_plan` would then happily
-    write a revision to a line the preview never modelled, which is the exact
-    shape of a preview that lies.
+    A scenario is scoped to ONE Business Unit because coverage is computed at that
+    scope (D01). An override naming a line in a DIFFERENT Business Unit would be
+    silently ignored by the preview (the pool query never sees that line) while
+    sitting in the scenario looking effective -- and `apply_to_base_plan` would
+    then happily write a revision to a line the preview never modelled, which is
+    the exact shape of a preview that lies.
+
+    A line belonging to ANOTHER CUSTOMER of the same Business Unit is now in
+    scope, and deliberately: the pool is divided across those customers together,
+    so the preview sees that line, prices it, and reports the result attributed to
+    its owner.
 
     Read-only, and called before an override is persisted. The shape and
     Business-Unit rules are `app.engines.overrides.validate`'s job; this is the
@@ -418,45 +435,48 @@ def assert_target_in_scope(db: Session, scenario, override) -> None:
     well_id = override.target_well_id
     if well_id is not None:
         # A WELL override (demand status). Same rule, same reason: a status change
-        # on another customer's well would be invisible to this scenario's preview
-        # -- the pool query never sees that well -- while `apply_to_base_plan`
-        # would happily cascade revisions to every line of it.
-        well_owner = (
-            db.query(PlanningNode.customer_id)
+        # on a well OUTSIDE this Business Unit would be invisible to this
+        # scenario's preview -- the pool query never sees that well -- while
+        # `apply_to_base_plan` would happily cascade revisions to every line of it.
+        well_bu = (
+            db.query(Customer.business_unit_id)
+            .join(PlanningNode, PlanningNode.customer_id == Customer.id)
             .join(Well, Well.planning_node_id == PlanningNode.id)
             .filter(Well.id == well_id)
             .scalar()
         )
-        if well_owner is None:
+        if well_bu is None and not db.query(Well.id).filter(Well.id == well_id).scalar():
             raise LookupError(f"Well {well_id!r} does not exist.")
-        if well_owner != scenario.customer_id:
+        if well_bu != scenario.business_unit_id:
             raise ValueError(
-                f"Well {well_id!r} belongs to a different customer than scenario "
-                f"{scenario.name!r}. A scenario may only override its own "
-                "customer's plan -- coverage is computed per customer, so an "
-                "override on someone else's well could be neither previewed nor "
-                "honestly applied."
+                f"Well {well_id!r} belongs to a different Business Unit than "
+                f"scenario {scenario.name!r}. A scenario may only override its own "
+                "Business Unit's plan -- coverage is allocated per Business Unit, "
+                "so an override outside it could be neither previewed nor honestly "
+                "applied."
             )
 
     line_id = override.target_demand_line_id
     if line_id is None:
         return
 
-    owner = (
-        db.query(PlanningNode.customer_id)
+    exists = db.query(DemandLine.id).filter(DemandLine.id == line_id).scalar()
+    if exists is None:
+        raise LookupError(f"Demand line {line_id!r} does not exist.")
+    line_bu = (
+        db.query(Customer.business_unit_id)
+        .join(PlanningNode, PlanningNode.customer_id == Customer.id)
         .join(Well, Well.planning_node_id == PlanningNode.id)
         .join(DemandLine, DemandLine.well_id == Well.id)
         .filter(DemandLine.id == line_id)
         .scalar()
     )
-    if owner is None:
-        raise LookupError(f"Demand line {line_id!r} does not exist.")
-    if owner != scenario.customer_id:
+    if line_bu != scenario.business_unit_id:
         raise ValueError(
-            f"Demand line {line_id!r} belongs to a different customer than "
+            f"Demand line {line_id!r} belongs to a different Business Unit than "
             f"scenario {scenario.name!r}. A scenario may only override its own "
-            "customer's plan -- coverage is computed per customer, so an override "
-            "on someone else's line could be neither previewed nor honestly "
+            "Business Unit's plan -- coverage is allocated per Business Unit, so "
+            "an override outside it could be neither previewed nor honestly "
             "applied."
         )
 
@@ -630,30 +650,47 @@ def preview(
 ) -> ScenarioImpact:
     """Coverage, MRP and Risk impact of `scenario`. Writes nothing.
 
-    Computes the customer's coverage twice through the ONE coverage
+    Computes the BUSINESS UNIT's coverage twice through the ONE coverage
     implementation -- once as the data actually is, once with the scenario's
     overrides resolved in -- and diffs the two. See the module docstring for the
     four mechanisms that make the no-write property structural rather than
     hopeful.
+
+    THE SCOPE OF THE PREVIEW IS THE BUSINESS UNIT (D01, 2026-09-06)
+    --------------------------------------------------------------
+    It was the scenario's own customer until the unit of allocation became the
+    Business Unit. Keeping it there would have made this the one thing this module
+    exists to prevent: a preview that lies. Cutting one customer's demand frees
+    steel that an earlier-ROS line of a NEIGHBOURING customer will take, and apply
+    -- running the same pass and keeping all of it -- does exactly that. The
+    planner would have been shown a promise the apply does not keep, and the
+    neighbour's planner would have watched their well move for no reason they
+    could see.
+
+    So every line and well of the Business Unit is diffed, and each change carries
+    the customer it belongs to, so a planner can tell their own from the knock-on
+    before they commit to anything.
     """
     before_pending = _pending_snapshot(db)
 
     with db.no_autoflush:
-        customer = scenario.customer
-        bu = customer.business_unit
+        bu = scenario.business_unit
 
-        resolver = ScenarioOverrides(scenario.overrides, customer)
+        resolver = ScenarioOverrides(scenario.overrides, bu)
 
-        base = compute_customer_coverage(
-            db, customer, status_filter, profile_filter, NO_OVERRIDES
+        base = compute_business_unit_coverage(
+            db, bu, status_filter, profile_filter, NO_OVERRIDES
         )
-        after = compute_customer_coverage(
-            db, customer, status_filter, profile_filter, resolver
+        after = compute_business_unit_coverage(
+            db, bu, status_filter, profile_filter, resolver
         )
 
-        well_names = _well_names(db, customer.id)
-        line_changes = _line_changes(base, after, well_names, resolver)
-        well_changes = _well_changes(base, after, well_names)
+        well_names = _well_names(db, bu.id)
+        customer_names = _customer_names(db, bu.id)
+        line_changes = _line_changes(
+            base, after, well_names, resolver, customer_names
+        )
+        well_changes = _well_changes(base, after, well_names, customer_names)
         mrp_changes = _mrp_changes(db, base, after, today=today)
         # `mrp_changes` is passed IN rather than recomputed inside: the MRP-impact
         # computation must happen exactly once per preview, and the runout comparison
@@ -671,10 +708,8 @@ def preview(
             scenario_id=scenario.id,
             scenario_name=scenario.name,
             scenario_status=scenario.status.value,
-            customer_id=customer.id,
-            customer_name=customer.name,
-            business_unit_id=customer.business_unit_id,
-            business_unit_name=bu.name if bu is not None else None,
+            business_unit_id=bu.id,
+            business_unit_name=bu.name,
             override_count=len(scenario.overrides),
             unmodelled_override_count=len(resolver.unmodelled),
             line_changes=line_changes,
@@ -702,20 +737,34 @@ def preview(
 # --------------------------------------------------------------------------
 
 
-def _well_names(db: Session, customer_id: str) -> dict[str, str]:
+def _well_names(db: Session, business_unit_id: str) -> dict[str, str]:
+    """Every well of the Business Unit, by id. BU-wide since the preview is (D01):
+    a customer-scoped map would render a neighbour's moved well as a raw UUID."""
     return {
         well.id: well.name
         for well in db.query(Well)
         .join(PlanningNode, Well.planning_node_id == PlanningNode.id)
-        .filter(PlanningNode.customer_id == customer_id)
+        .join(Customer, PlanningNode.customer_id == Customer.id)
+        .filter(Customer.business_unit_id == business_unit_id)
+    }
+
+
+def _customer_names(db: Session, business_unit_id: str) -> dict[str, str]:
+    """{customer_id: name} for the Business Unit, so every change can say whose."""
+    return {
+        c.id: c.name
+        for c in db.query(Customer).filter(
+            Customer.business_unit_id == business_unit_id
+        )
     }
 
 
 def _line_changes(
-    base: CustomerCoverage,
-    after: CustomerCoverage,
+    base,
+    after,
     well_names: dict[str, str],
     resolver: ScenarioOverrides,
+    customer_names: dict[str, str] | None = None,
 ) -> tuple[LineCoverageChange, ...]:
     """Every line the two passes have an opinion about, before -> after.
 
@@ -750,6 +799,9 @@ def _line_changes(
         status_before = b.status.value if b else "NotEvaluated"
         status_after = a.status.value if a else "NotEvaluated"
         ref = a or b
+        owner = getattr(base, "customer_of_line", {}).get(line_id) or getattr(
+            after, "customer_of_line", {}
+        ).get(line_id)
 
         out.append(
             LineCoverageChange(
@@ -771,20 +823,30 @@ def _line_changes(
                 directly_overridden=(
                     line_id in directly or ref.well_id in directly_wells
                 ),
+                customer_id=owner,
+                customer_name=(customer_names or {}).get(owner) if owner else None,
             )
         )
     return tuple(out)
 
 
 def _well_changes(
-    base: CustomerCoverage,
-    after: CustomerCoverage,
+    base,
+    after,
     well_names: dict[str, str],
+    customer_names: dict[str, str] | None = None,
 ) -> tuple[WellCoverageChange, ...]:
+    customer_names = customer_names or {}
+    owner_of_well: dict[str, str] = {}
+    for pass_ in (base, after):
+        for owner, well_ids in getattr(pass_, "wells_by_customer", {}).items():
+            for well_id in well_ids:
+                owner_of_well[well_id] = owner
     out: list[WellCoverageChange] = []
     for well_id in sorted(set(base.well_status) | set(after.well_status)):
         before = base.well_status.get(well_id)
         now = after.well_status.get(well_id)
+        owner = owner_of_well.get(well_id)
         out.append(
             WellCoverageChange(
                 well_id=well_id,
@@ -792,6 +854,8 @@ def _well_changes(
                 status_before=before,
                 status_after=now,
                 changed=before != now,
+                customer_id=owner,
+                customer_name=customer_names.get(owner) if owner else None,
             )
         )
     return tuple(out)
@@ -1163,24 +1227,12 @@ def _notes(scenario, resolver: ScenarioOverrides, bu) -> tuple[str, ...]:
             "supply change in Oracle, then re-preview against the synced data."
         )
 
-    if bu is not None:
-        notes.append(
-            f"Every quantity above was resolved inside Business Unit "
-            f"'{bu.name}'. A scenario cannot reach across the Business Unit "
-            "boundary; an inventory override naming another BU is refused when it "
-            "is created."
-        )
-    else:
-        # Unreachable in practice: an unmapped customer has no inventory pool, so
-        # the preview's coverage pass raises InventoryScopeMissing before these
-        # notes are assembled. Kept, and worded honestly, so that if a future
-        # code path DOES produce a note set for such a customer the note does not
-        # describe the removed legacy fallback.
-        notes.append(
-            f"Customer '{scenario.customer.name}' is not mapped to a Business "
-            "Unit. On-hand inventory exists only per (Business Unit, product), so "
-            "there is no pool to resolve any quantity against and no coverage can "
-            "be computed for this customer at all -- map it to a Business Unit."
-        )
+    notes.append(
+        f"Every quantity above was resolved inside Business Unit '{bu.name}', and "
+        "the impact covers EVERY customer of it: the pool is divided across them "
+        "together, so a change to one customer's demand moves its neighbours' "
+        "wells. A scenario cannot reach across the Business Unit boundary; an "
+        "inventory override naming another BU is refused when it is created."
+    )
 
     return tuple(notes)

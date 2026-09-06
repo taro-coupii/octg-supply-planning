@@ -230,10 +230,9 @@ export default function HomeDashboard() {
                 )}
               </span>
               <span className="home-col-foot">
-                <Link to="/analysis/sharing">
-                  Could any be covered by sharing within the Business Unit?
-                </Link>{" "}
-                Read-only what-if; changes nothing.
+                Inventory is already divided across every customer of the
+                Business Unit, so these are short after that division — there is
+                no neighbour&apos;s surplus left to ask about.
               </span>
             </>
           )}

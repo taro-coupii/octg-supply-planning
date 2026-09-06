@@ -101,9 +101,9 @@ export default function HierarchyPanel() {
         <p className="scenario-section-note">
           The Business Unit is the <strong>hard inventory boundary</strong>.
           On-hand stock belongs to a (Business Unit, product) pair, and it is
-          never offered outside its BU — not by coverage, not by substitution,
-          and not by the cross-customer sharing what-if, however large the
-          quantity held elsewhere.
+          never offered outside its BU — not by coverage and not by
+          substitution, however large the quantity held elsewhere. Inside a BU it
+          is pooled across every customer below, earliest need first.
         </p>
 
         <div className="admin-tree">
@@ -139,9 +139,6 @@ export default function HierarchyPanel() {
                             would land the planner on an all-customer screen
                             looking like a filtered one. */}
                         <div className="admin-customer-links">
-                          <Link to={`/analysis/sharing?customer=${c.id}`}>
-                            BU sharing what-if
-                          </Link>
                           <Link to={`/executive?customer=${c.id}`}>
                             Executive view
                           </Link>
@@ -159,9 +156,9 @@ export default function HierarchyPanel() {
                 )}
                 {members.length === 1 && (
                   <p className="admin-bu-note">
-                    Only one customer sits in this Business Unit, so there is no
-                    cross-customer sharing to evaluate inside it. Any surplus
-                    reported for that customer is its own unconsumed stock.
+                    Only one customer sits in this Business Unit, so it competes
+                    with nobody for the pool. Any surplus reported for it is its
+                    own unconsumed stock.
                   </p>
                 )}
               </div>

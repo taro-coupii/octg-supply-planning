@@ -111,7 +111,7 @@ def list_business_units(
     A BU is a HARD boundary: on-hand quantity belongs to a (BU, product) pair and is
     never offered outside its BU by any code path. This endpoint exists so the UI can
     label which BU's stock a coverage figure was computed against, scope the
-    cross-customer sharing analysis, and -- since `PATCH /customers/{id}` -- populate
+    surplus report, and -- since `PATCH /customers/{id}` -- populate
     the remap picker.
     """
     query = db.query(BusinessUnit)
@@ -434,7 +434,7 @@ def _config_note(change: CustomerConfigChange) -> str:
             f"{change.business_unit_name_after or 'NONE'}. That changes the INVENTORY "
             "POOL its coverage is computed from entirely -- a Business Unit is an "
             "absolute boundary, and InventoryOnHand, InventoryOnOrder, the "
-            "InventoryAssignment netting scope and the cross-customer sharing what-if "
+            "InventoryAssignment netting scope and the customers its stock is pooled across "
             "all key on it. Assignments and on-hand rows do NOT travel with the "
             "customer."
         )

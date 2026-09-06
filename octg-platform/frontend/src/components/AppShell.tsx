@@ -55,7 +55,6 @@ const SECTIONS: NavSection[] = [
       { to: "/customer-owned-inventory", label: "Customer-owned inventory" },
       { to: "/company-inventory", label: "Company inventory" },
       { to: "/scenarios", label: "Scenarios" },
-      { to: "/analysis/sharing", label: "Cross-customer sharing" },
     ],
   },
   {

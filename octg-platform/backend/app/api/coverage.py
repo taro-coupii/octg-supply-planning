@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session, joinedload
 
 from app.db import get_db
-from app.engines.coverage import recompute_customer
+from app.engines.coverage import recompute_all_business_units
 from app.engines.coverage_scope import (
     effective_profile_filter,
     effective_status_filter,
@@ -253,48 +253,53 @@ def recompute_coverage(
     computed_lines = 0
     skipped: list[CoverageRecomputeSkippedOut] = []
 
-    for customer in customers:
-        try:
-            result = recompute_customer(
-                db,
-                customer,
-                status_filter=status_filter,
-                profile_filter=profile_filter,
-            )
-        except InventoryNotScoped as exc:
-            # Roll back only this customer's partial work, then carry on. The next
-            # customer starts from a clean session.
-            db.rollback()
-            skipped.append(
-                CoverageRecomputeSkippedOut(
-                    customer_id=customer.id,
-                    name=customer.name,
-                    reason=str(exc),
-                )
-            )
-            continue
-        db.commit()
-        computed_customers += 1
-        computed_lines += len(result.by_line)
+    # ONE pass per Business Unit -- the unit of allocation since D01 -- with each
+    # pool's failure isolated to the customers that share it. The response still
+    # names customers, because that is who an operator is looking for.
+    sweep = recompute_all_business_units(
+        db,
+        status_filter=status_filter,
+        profile_filter=profile_filter,
+        customers=customers,
+    )
+    db.commit()
+    computed_customers = len(sweep.recomputed_customer_ids)
+    computed_lines = sweep.recomputed_line_count
+    skipped = [
+        CoverageRecomputeSkippedOut(
+            customer_id=customer_id,
+            name=customer_name,
+            reason=failure.reason,
+        )
+        for failure in sweep.failures
+        for customer_id, customer_name in zip(
+            failure.customer_ids, failure.customer_names
+        )
+    ]
 
     scope = (
         f"status [{', '.join(sorted(s.value for s in status_filter))}] / "
         f"profile [{', '.join(sorted(p.value for p in profile_filter))}]"
     )
+    widened = (
+        " Naming a customer recomputes its whole Business Unit: the pool is divided "
+        "once across every customer that shares it, so one customer's verdicts "
+        "cannot be re-derived on their own."
+    )
     if skipped:
         note = (
             f"Recomputed {computed_customers} customer(s) and {computed_lines} demand "
-            f"line(s) under the platform default scope: {scope}. "
+            f"line(s) under the platform default scope: {scope}.{widened} "
             f"{len(skipped)} customer(s) could NOT be evaluated and keep the verdicts "
             "they already had -- each is named above with the reason. This is "
-            "isolation, not partial success: a customer whose inventory facts are "
-            "incomplete costs only itself."
+            "isolation, not partial success: a Business Unit whose inventory facts "
+            "are incomplete costs only the customers that share its pool."
         )
     else:
         note = (
             f"Recomputed {computed_customers} customer(s) and {computed_lines} demand "
-            f"line(s) under the platform default scope: {scope}. These are now the "
-            "official stored verdicts."
+            f"line(s) under the platform default scope: {scope}.{widened} These are "
+            "now the official stored verdicts."
         )
 
     return CoverageRecomputeOut(

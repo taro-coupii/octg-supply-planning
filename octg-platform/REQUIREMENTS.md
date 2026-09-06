@@ -37,9 +37,10 @@ in `../MVP_COMPROMISES.md`.
    either as 0 or a dash)
 2. **Make invalid states unrepresentable** — e.g. `demand_status` lives once on the Well,
    never on a DemandLine
-3. **The BU is an absolute boundary; the Customer is a default boundary** — inventory never
-   crosses a BU. Customers are separated by default; only read-only what-if analysis
-   (cross-customer sharing) may look across them within a BU
+3. **The BU is an absolute boundary and the unit of allocation** — inventory never crosses a
+   BU, and inside one it is divided ONCE across every customer below it, earliest ROS first
+   (ruled 2026-09-06). What stays customer-private is ownership, not pooling: customer-owned
+   stock and Oracle assignments are never drawn by anyone else
 4. **Customer-owned inventory is consumed before company inventory**, and is never shared
    with another customer
 5. **The platform never creates, releases, or overwrites a hard reservation** — the Oracle
@@ -47,8 +48,8 @@ in `../MVP_COMPROMISES.md`.
    CustomerOwnedInventory
 6. **Coverage is only ever written by the engine** — there is no manual override. A missing
    CoverageResult means "not evaluated", never "fine"
-7. **One computation, one implementation** — previews, scenarios, and sharing all call the
-   same production engines. No second implementation
+7. **One computation, one implementation** — previews and scenarios call the same production
+   engines. No second implementation
 8. **Unit of measure is mandatory on every screen** (Mtr / PC / MT) — mixed-unit
    aggregations return `quantities_by_unit`, never a scalar sum
 9. **One quantity rule for every writer** (`app/quantities.py`, ruled 2026-09-06): finite,
@@ -93,8 +94,6 @@ Cross-cutting rules settled by rulings during development:
 - **Approval Queue**: Pending/Approved/Rejected tabs with in-place Approve/Decline
   (two-step confirm; re-deciding a decided approval returns 409 — overturning requires a
   new request)
-- **Cross-Customer Sharing**: read-only what-if within a BU. `official_status` shows the
-  stored real verdict verbatim
 
 ### 4.3 Supply planning
 - **MRP Summary / By Item**: the monthly ledger is full accounting form — **opening balance
@@ -225,5 +224,5 @@ notifications ordering deliberately left open until valuation lands.
 - Writing to Oracle from the platform (creating or releasing hard assignments)
 - Manual coverage overrides
 - Dark mode
-- ~~C-10~~ — **ruled 2026-08-20: align cross-customer sharing what-if to the production
-  partial-consumption method** (see the compromise register for implementation)
+- ~~C-10~~ — closed by retiring the cross-customer sharing what-if (2026-09-06): with the
+  pool divided across the whole BU there is no neighbour's surplus left to ask about

@@ -254,40 +254,28 @@ def apply_substitution_change(
     # Imported locally: `app.engines.coverage` imports `app.engines.substitution`, and
     # a top-level import here would put this module in the middle of that chain for no
     # benefit. Same reason `lead_time_admin` does it.
-    from app.engines.coverage import recompute_customer
-    from app.engines.inventory import InventoryRowMissing, InventoryScopeMissing
+    from app.engines.coverage import recompute_all_business_units
 
-    customers = db.query(Customer).all()
-    recomputed: list[str] = []
-    failures: list[RecomputeFailure] = []
-    for customer in customers:
-        try:
-            # SAVEPOINT per customer. `recompute_customer` deletes and rewrites rows as
-            # it goes, so a failure part-way through would otherwise leave that
-            # customer's stored verdicts half-erased -- strictly worse than the stale
-            # ones it was replacing. The savepoint makes the per-customer outcome
-            # all-or-nothing, which is what lets the failure be reported instead of
-            # having to abort the whole request.
-            with db.begin_nested():
-                # No explicit filters: the platform's CURRENT coverage scope is what
-                # the official verdict must be computed under. See
-                # app.engines.coverage_scope.
-                recompute_customer(db, customer)
-            recomputed.append(customer.id)
-        except (InventoryRowMissing, InventoryScopeMissing) as exc:
-            # The two refusals `app.engines.inventory` raises rather than inventing a
-            # quantity. Caught HERE and nowhere wider: they are the only exceptions
-            # whose meaning is "this customer's inventory facts are incomplete", which
-            # is a data-feed gap that must not veto an unrelated master-data write. Any
-            # other exception still propagates -- a bug in the coverage rules must not
-            # be laundered into a per-customer footnote.
-            failures.append(
-                RecomputeFailure(
-                    customer_id=customer.id,
-                    customer_name=customer.name,
-                    reason=str(exc),
-                )
-            )
+    # ONE pass per Business Unit, each in its own SAVEPOINT, with failures isolated
+    # to the pool that could not be measured (D01 made the Business Unit the unit of
+    # allocation, so it is also the unit of failure). A pool whose inventory facts
+    # are incomplete is a data-feed gap that must not veto an unrelated master-data
+    # write; every customer sharing it is NAMED rather than silently skipped. Any
+    # other exception still propagates -- a bug in the coverage rules must not be
+    # laundered into a footnote.
+    sweep = recompute_all_business_units(db)
+    recomputed: list[str] = list(sweep.recomputed_customer_ids)
+    failures: list[RecomputeFailure] = [
+        RecomputeFailure(
+            customer_id=customer_id,
+            customer_name=customer_name,
+            reason=failure.reason,
+        )
+        for failure in sweep.failures
+        for customer_id, customer_name in zip(
+            failure.customer_ids, failure.customer_names
+        )
+    ]
     db.flush()
 
     well_changes: list[WellCoverageChange] = []

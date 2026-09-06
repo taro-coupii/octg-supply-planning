@@ -98,7 +98,7 @@ function ValueDiff({
  *
  * Loud and unmissable on purpose. A preview figure must never be read as the
  * official coverage verdict — the same decision already taken for the
- * cross-customer sharing panel. `is_what_if` comes from the backend so this does
+ * scenario preview. `is_what_if` comes from the backend so this does
  * not depend on the frontend inferring anything.
  */
 function WhatIfBanner({ impact }: { impact: ScenarioImpact }) {
@@ -189,7 +189,7 @@ function CoverageImpactTable({ changes }: { changes: LineCoverageChange[] }) {
     return (
       <div className="card">
         <div className="empty">
-          This customer has no demand the coverage engine evaluates.
+          This Business Unit has no demand the coverage engine evaluates.
         </div>
       </div>
     );
@@ -227,6 +227,11 @@ function CoverageImpactTable({ changes }: { changes: LineCoverageChange[] }) {
             >
               <td>
                 <Link to={`/wells/${c.well_id}`}>{c.well_name}</Link>
+                {c.customer_name && (
+                  <span className="other-customer">
+                    {c.customer_name}
+                  </span>
+                )}
                 {c.changed && !c.directly_overridden && (
                   <span className="knock-on">
                     knock-on effect — this line was not overridden
@@ -1011,7 +1016,7 @@ export default function ScenarioEditor() {
             </span>
           </h1>
           <p className="scenario-sub">
-            {scenario.customer_name}
+            {scenario.business_unit_name ?? "No Business Unit"}
             {scenario.created_by_user_name
               ? ` · created by ${scenario.created_by_user_name}`
               : ""}
@@ -1155,12 +1160,11 @@ export default function ScenarioEditor() {
                   // re-derived, so the timeline cannot invent copy that contradicts
                   // the panel that actually refuses the apply.
                   applyBlockers={impact.apply_blockers}
-                  // The scenario customer's own Business Unit, needed to scope a
+                  // The scenario's own Business Unit, needed to scope a
                   // hypothetical new order to (BU, product) as a real purchase-order
-                  // row is. Taken from the PREVIEW rather than from `scenario`, which
-                  // carries no BU: the preview resolved it the same way every quantity
-                  // on this page was resolved, so the timeline cannot name a different
-                  // one than the figures were computed under.
+                  // row is. Taken from the PREVIEW, which resolved it the same way
+                  // every quantity on this page was resolved, so the timeline cannot
+                  // name a different one than the figures were computed under.
                   businessUnitId={impact.business_unit_id}
                 />
               </div>
@@ -1206,6 +1210,9 @@ export default function ScenarioEditor() {
                     <tr key={w.well_id} className={w.changed ? "row-changed" : ""}>
                       <td>
                         <Link to={`/wells/${w.well_id}`}>{w.well_name}</Link>
+                        {w.customer_name && (
+                          <span className="other-customer">{w.customer_name}</span>
+                        )}
                       </td>
                       <td>
                         <StatusDiff

@@ -4,13 +4,13 @@ from datetime import datetime
 
 from sqlalchemy.orm import Session
 
-from app.engines.allocation import allocate_detailed
+from app.engines.allocation import allocate_business_unit, allocate_detailed
 # The two filters, and the resolver that decides which pair is actually in force.
 #
 # THE CONSTANTS ARE RE-EXPORTED FROM HERE ON PURPOSE. They were defined in this
 # module for most of the platform's life and are imported from it by
 # `app.api.wells`, `app.api.demand`, `app.api.dashboard`, `app.engines.mrp`,
-# `app.engines.executive`, `app.engines.sharing`, `app.engines.scenario`,
+# `app.engines.executive`, `app.engines.scenario`,
 # `app.engines.well_dates`, `app.engines.coverage_view` and
 # `tests/test_coverage_engine.py`. They moved to `app.engines.coverage_scope`
 # because eight of those modules need the filters and none of them needs the
@@ -28,7 +28,13 @@ from app.engines.coverage_scope import (  # noqa: F401  (re-exported)
     effective_profile_filter,
     effective_status_filter,
 )
-from app.engines.inventory import ownership_pool_map, scoped_customer_ids
+from app.engines.inventory import (
+    InventoryNotScoped,
+    customer_owned_map,
+    on_hand_map,
+    ownership_pool_map,
+    scoped_customer_ids,
+)
 from app.engines.order_dates import is_recoverable, order_feasibility
 from app.engines.overrides import NO_OVERRIDES, LineView, OverrideResolver
 from app.engines.substitution import (
@@ -42,6 +48,7 @@ from app.engines.substitution import (
 )
 from app.models import (
     AllocationPolicy,
+    BusinessUnit,
     CoverageResult,
     CoverageStatus,
     Customer,
@@ -602,102 +609,328 @@ class CustomerCoverage:
     consumed_from_customer_owned: dict[str, float] = field(default_factory=dict)
 
 
-def compute_customer_coverage(
+@dataclass(frozen=True)
+class BusinessUnitCoverage:
+    """The complete coverage answer for ONE BUSINESS UNIT -- computed, unwritten.
+
+    THE UNIT OF ALLOCATION (product-owner ruling 2026-09-06, D01)
+    ------------------------------------------------------------
+    Until this existed the unit was the CUSTOMER: each customer's demand was
+    allocated against the whole Business Unit's quantity independently, so a BU
+    holding 6,000 could tell two customers needing 4,000 each that both were
+    Covered. Every figure downstream inherited that: the executive coverage
+    percentage, the surplus list, the MRP recommendation. The pool is now
+    contested ONCE, across every customer in the Business Unit, so the sum of
+    what the BU has promised can never exceed what it holds.
+
+    `CustomerCoverage` did not go away -- `for_customer` projects this answer onto
+    one customer and every existing consumer keeps its shape. What changed is that
+    the projection is a VIEW OF A BU-WIDE PASS rather than a pass of its own, so
+    two customers of one BU can no longer be handed contradictory answers.
+    """
+
+    business_unit_id: str
+    customer_ids: tuple[str, ...]
+    by_line: dict[str, LineCoverage]
+    excluded_line_ids: tuple[str, ...]
+    well_status: dict[str, str | None]
+    included_views: tuple[LineView, ...]
+    all_views: tuple[LineView, ...]
+    #: {line_id: customer_id} for every line of the Business Unit, included or not.
+    customer_of_line: dict[str, str]
+    #: {customer_id: (well_id, ...)} for every well of the Business Unit.
+    wells_by_customer: dict[str, tuple[str, ...]]
+    pending_substitute_load: tuple[PendingSubstituteLoad, ...] = ()
+    #: {customer_id: {product_id: qty}} -- per customer, because what is blocked
+    #: depends on WHOSE lines are asking: a SOFT customer's own assignments are
+    #: pooled across its own wells, everybody else's are reserved away from it.
+    hard_assigned_by_product: dict[str, dict[str, float]] = field(default_factory=dict)
+    consumed_from_pool: dict[str, float] = field(default_factory=dict)
+    consumed_from_assignment: dict[str, float] = field(default_factory=dict)
+    consumed_from_customer_owned: dict[str, float] = field(default_factory=dict)
+
+    def for_customer(self, customer_id: str) -> CustomerCoverage:
+        """This BU-wide answer, projected onto one customer.
+
+        A projection, never a recomputation: every verdict here was decided in the
+        single pass, so two customers of the same Business Unit read consistent
+        numbers by construction rather than by agreement.
+        """
+        mine = {
+            line_id: verdict
+            for line_id, verdict in self.by_line.items()
+            if self.customer_of_line.get(line_id) == customer_id
+        }
+        my_wells = set(self.wells_by_customer.get(customer_id, ()))
+        return CustomerCoverage(
+            customer_id=customer_id,
+            by_line=mine,
+            excluded_line_ids=tuple(
+                line_id
+                for line_id in self.excluded_line_ids
+                if self.customer_of_line.get(line_id) == customer_id
+            ),
+            well_status={
+                well_id: status
+                for well_id, status in self.well_status.items()
+                if well_id in my_wells
+            },
+            included_views=tuple(
+                v for v in self.included_views
+                if self.customer_of_line.get(v.id) == customer_id
+            ),
+            all_views=tuple(
+                v for v in self.all_views
+                if self.customer_of_line.get(v.id) == customer_id
+            ),
+            pending_substitute_load=tuple(
+                load for load in self.pending_substitute_load
+                if any(
+                    self.customer_of_line.get(line_id) == customer_id
+                    for line_id in load.pending_line_ids
+                )
+            ),
+            hard_assigned_by_product=dict(
+                self.hard_assigned_by_product.get(customer_id, {})
+            ),
+            consumed_from_pool={
+                k: v for k, v in self.consumed_from_pool.items() if k in mine
+            },
+            consumed_from_assignment={
+                k: v for k, v in self.consumed_from_assignment.items() if k in mine
+            },
+            consumed_from_customer_owned={
+                k: v for k, v in self.consumed_from_customer_owned.items() if k in mine
+            },
+        )
+
+
+def _business_unit_customers(db: Session, business_unit_id: str) -> list[Customer]:
+    """Every customer of the Business Unit, in a deterministic order."""
+    return (
+        db.query(Customer)
+        .filter(Customer.business_unit_id == business_unit_id)
+        .order_by(Customer.id)
+        .all()
+    )
+
+
+def _assignment_context_bu(
     db: Session,
-    customer: Customer,
+    included: list[LineView],
+    policy_by_customer: dict[str, AllocationPolicy],
+    customer_of_line: dict[str, str],
+    business_unit_id: str,
+    resolver: OverrideResolver = NO_OVERRIDES,
+) -> tuple[dict[tuple[str, str], float], dict[str, float], dict[tuple[str, str], float]]:
+    """The Oracle-projected assignments of one Business Unit, in three maps.
+
+    Returns:
+      assigned_by_line   {(demand_line_id, product_id): qty} -- the line's OWN
+                         reservation, for HARD and HYBRID lines only.
+      total_by_product   {product_id: qty} -- EVERY assignment row in this Business
+                         Unit, including rows on demand lines this pass does not
+                         evaluate. Reserved steel is never free pool, whether or not
+                         the line it is reserved for is in scope.
+      block_by_customer  {(customer_id, product_id): qty} -- a SOFT customer's OWN
+                         assignments, pooled across its own lines.
+
+    WHY THE THIRD MAP EXISTS
+    ------------------------
+    The per-customer pass expressed the SOFT rule as an exclusion: it ignored the
+    customer's own assignments entirely and carved out only the neighbours'. That
+    worked while each customer was allocated on its own, and it has no meaning once
+    every customer is allocated together -- "ignore my own assignments" would drop
+    that steel into the shared pool, where a neighbour could take it, and the
+    platform would have released an Oracle reservation.
+
+    So the rule is expressed POSITIVELY instead, and says the same thing: every
+    assignment comes out of the shared pool (`total_by_product`), and a SOFT
+    customer gets its own back as a private block usable by any of ITS lines
+    (`block_by_customer`). A soft customer's availability is therefore
+    `on_hand - total + own`, which is exactly `on_hand - foreign` -- the figure the
+    per-customer pass computed. Nothing about SOFT changed; it is merely stated in
+    a form that survives the pool being shared.
+
+    Scenario ASSIGNMENT overrides are applied here, and only here. An override on a
+    line outside this Business Unit is ignored -- a scenario cannot reach into
+    another BU's reservations -- and one on an in-scope line moves BOTH the map that
+    grants it and the total that carves it out of the shared pool, so raising an
+    assignment takes that quantity from the pool rather than conjuring it.
+    """
+    line_ids = {view.id for view in included}
+    assigned_by_line: dict[tuple[str, str], float] = defaultdict(float)
+    total_by_product: dict[str, float] = defaultdict(float)
+    block_by_customer: dict[tuple[str, str], float] = defaultdict(float)
+
+    rows = (
+        db.query(InventoryAssignment, PlanningNode.customer_id)
+        .join(DemandLine, InventoryAssignment.demand_line_id == DemandLine.id)
+        .join(Well, DemandLine.well_id == Well.id)
+        .join(PlanningNode, Well.planning_node_id == PlanningNode.id)
+        .join(Customer, PlanningNode.customer_id == Customer.id)
+        .filter(Customer.business_unit_id == business_unit_id)
+        .all()
+    )
+    for row, owner_id in rows:
+        qty = max(0.0, row.quantity or 0.0)
+        total_by_product[row.product_id] += qty
+        if policy_by_customer.get(owner_id) == AllocationPolicy.SOFT:
+            block_by_customer[(owner_id, row.product_id)] += qty
+        elif row.demand_line_id in line_ids:
+            assigned_by_line[(row.demand_line_id, row.product_id)] += qty
+
+    for (line_id, product_id), new_qty in resolver.assignment_overrides().items():
+        if line_id not in line_ids:
+            continue
+        owner_id = customer_of_line.get(line_id)
+        new_qty = max(0.0, new_qty)
+        if policy_by_customer.get(owner_id) == AllocationPolicy.SOFT:
+            # The override cannot be attributed to a single line's entitlement under
+            # SOFT (there is none), so it moves the customer's block and the total
+            # by the same delta -- leaving the customer's own availability unchanged
+            # and taking the difference out of the shared pool, which is where a
+            # raised reservation must come from.
+            old_qty = 0.0
+            block_by_customer[(owner_id, product_id)] += new_qty
+        else:
+            old_qty = assigned_by_line.get((line_id, product_id), 0.0)
+            assigned_by_line[(line_id, product_id)] = new_qty
+        total_by_product[product_id] = max(
+            0.0, total_by_product.get(product_id, 0.0) - old_qty + new_qty
+        )
+
+    return dict(assigned_by_line), dict(total_by_product), dict(block_by_customer)
+
+
+def compute_business_unit_coverage(
+    db: Session,
+    business_unit,
     status_filter: set[DemandStatus] | None = None,
     profile_filter: set[DemandProfile] | None = None,
     resolver: OverrideResolver = NO_OVERRIDES,
-) -> CustomerCoverage:
+) -> BusinessUnitCoverage:
     """THE coverage algorithm. Computes; does not write.
 
     This function is the single implementation of the coverage rules in the
-    platform. `recompute_customer` is this plus persistence;
-    `app.engines.scenario.preview` is this plus a `resolver` carrying a
-    scenario's overrides. Nothing else may re-derive coverage.
+    platform. `recompute_business_unit` is this plus persistence;
+    `app.engines.scenario.preview` is this plus a `resolver` carrying a scenario's
+    overrides; `compute_customer_coverage` is this plus a projection onto one
+    customer. Nothing else may re-derive coverage.
 
     That split is the whole reason scenario preview can be trusted. A preview
-    computed by a SECOND implementation would be a promise made by code that is
-    not the code that keeps it -- it would drift, and it would drift silently,
-    because a preview has no downstream consumer to notice it was wrong. Here,
-    "preview and apply agree" is not a property maintained by tests, it is a
-    property of there being one function.
+    computed by a SECOND implementation would be a promise made by code that is not
+    the code that keeps it -- it would drift, and it would drift silently, because a
+    preview has no downstream consumer to notice it was wrong. Here, "preview and
+    apply agree" is not a property maintained by tests, it is a property of there
+    being one function.
+
+    THE SCOPE OF THE POOL IS THE BUSINESS UNIT
+    ------------------------------------------
+    Every in-scope demand line of every customer in `business_unit` is allocated in
+    ONE pass, earliest ROS first, against the Business Unit's stock. Two customers
+    can no longer both be promised the same steel (D01). The ownership walls inside
+    that pool are unchanged and are enforced by construction in
+    `app.engines.allocation.allocate_business_unit`:
+
+      * customer-owned material is drawable only by its own customer's lines;
+      * an Oracle assignment is drawable only by the line it names (HARD/HYBRID) or,
+        for a SOFT customer, only by that customer's own lines;
+      * only genuinely unassigned company stock is shared, and the Business Unit
+        boundary is never crossed.
 
     Reading values through `resolver`
     --------------------------------
     Every fact a scenario is allowed to change is read through
     `app.engines.overrides.OverrideResolver`: demand values via `resolver.view`,
     on-hand quantity via `resolver.on_hand`, assignments via
-    `resolver.assigned` / `resolver.assignment_overrides`, and well-layer
-    substitution approvals via `resolver.approval`. The OFFICIAL pass is not a
-    bypass of that indirection -- it passes `NO_OVERRIDES`, the identity
-    resolver, so both paths are the same instructions.
+    `resolver.assignment_overrides`, and well-layer substitution approvals via
+    `resolver.approval`. The OFFICIAL pass is not a bypass of that indirection --
+    it passes `NO_OVERRIDES`, the identity resolver, so both paths are the same
+    instructions.
 
     It writes NOTHING, and must stay that way: `app.engines.scenario` depends on
     that, tests pin it, and a write introduced here would turn every scenario
     preview into a silent mutation of the official verdict.
 
-    See `recompute_customer` for the full documentation of the rules themselves
-    -- the two boundaries, the ROS ordering, the allocation policies and where
-    the on-hand figure comes from.
-
-    THE SCOPE IS RESOLVED HERE, AND ONLY HERE
-    ----------------------------------------
+    THE FILTERS ARE RESOLVED HERE, AND ONLY HERE
+    -------------------------------------------
     `None` for either filter means "the platform's CURRENT default", resolved from
     `app.engines.coverage_scope` against THIS session -- which is the persisted
     platform-wide setting when an administrator has adjusted it, and the shipped
-    constant otherwise. It does not mean the constant.
-
-    The resolution happens in this one function rather than in each of the three
-    entry points, for the same reason there is one coverage implementation: two
-    readings of the setting are two things to keep in step, and a
-    `recompute_customer` that resolved its own would eventually persist verdicts
-    under a scope `compute_customer_coverage` was not using.
+    constant otherwise. It does not mean the constant. Resolving it in one function
+    rather than at each entry point is the same rule as having one implementation:
+    two readings of the setting are two things to keep in step.
     """
     if status_filter is None:
         status_filter = effective_status_filter(db)
     if profile_filter is None:
         profile_filter = effective_profile_filter(db)
 
-    wells = _customer_wells(db, customer)
+    bu_id = business_unit.id
+    customers = _business_unit_customers(db, bu_id)
+    customer_ids = [c.id for c in customers]
+    policy_by_customer = {c.id: c.allocation_policy for c in customers}
+
+    # Wells and their owning customer in one query -- the rollup needs every well of
+    # the Business Unit, including wells with no in-scope demand (they roll up to
+    # "not evaluated", never to "covered").
+    well_rows = (
+        db.query(Well, PlanningNode.customer_id)
+        .join(PlanningNode, Well.planning_node_id == PlanningNode.id)
+        .filter(PlanningNode.customer_id.in_(customer_ids))
+        .order_by(Well.id)
+        .all()
+        if customer_ids
+        else []
+    )
+    wells = [well for well, _owner in well_rows]
+    customer_of_well = {well.id: owner for well, owner in well_rows}
+    wells_by_customer: dict[str, list[str]] = defaultdict(list)
+    for well, owner in well_rows:
+        wells_by_customer[owner].append(well.id)
 
     # Demand lines are QUERIED rather than read off `well.demand_lines`. The
-    # relationship is a cached collection: a well whose lines were loaded during
-    # an earlier pass (when it had none) would keep reporting none, silently
-    # dropping later-inserted demand out of the pool. A query cannot go stale
-    # that way.
+    # relationship is a cached collection: a well whose lines were loaded during an
+    # earlier pass (when it had none) would keep reporting none, silently dropping
+    # later-inserted demand out of the pool. A query cannot go stale that way.
+    #
+    # Deterministic total order (ROS, then id as the tie-break) across the WHOLE
+    # Business Unit. Without it the contest between two customers' equally urgent
+    # lines would be decided by whatever order the database happened to return, and
+    # two identical recomputes could hand the last metre to different customers.
     pool_lines = (
         db.query(DemandLine)
         .join(Well, DemandLine.well_id == Well.id)
         .join(PlanningNode, Well.planning_node_id == PlanningNode.id)
-        .filter(PlanningNode.customer_id == customer.id)
-        # Deterministic total order (ROS, then id as the tie-break). Without
-        # it, the scarce customer-owned tier under HARD -- drawn in caller
-        # order -- and exact ROS-date ties under SOFT/HYBRID were decided by
-        # whatever order the database happened to return: two identical
-        # recomputes could hand the last metre to different wells.
+        .filter(PlanningNode.customer_id.in_(customer_ids))
         .order_by(DemandLine.ros_date, DemandLine.id)
         .all()
+        if customer_ids
+        else []
     )
 
-    # Every line is seen through the resolver, ALWAYS -- including on the
-    # official path, where the resolver hands each one straight back. The engine
-    # below therefore never touches a DemandLine attribute directly, so there is
-    # no second reading of demand for an override to miss.
+    # Every line is seen through the resolver, ALWAYS -- including on the official
+    # path, where the resolver hands each one straight back. The engine below
+    # therefore never touches a DemandLine attribute directly, so there is no second
+    # reading of demand for an override to miss.
     views = [resolver.view(line) for line in pool_lines]
+    customer_of_line = {
+        view.id: customer_of_well[view.well_id] for view in views
+    }
 
     # `view.status` is the effective demand status OF THIS LINE'S WELL (see
-    # `app.engines.overrides.LineView`), so this one condition applies both
-    # filters at their proper granularity: status by well, profile by line.
+    # `app.engines.overrides.LineView`), so this one condition applies both filters
+    # at their proper granularity: status by well, profile by line.
     #
     # Excluding a whole well therefore needs no special case, and -- more
     # importantly -- FREES ITS INVENTORY BY THE SAME ARITHMETIC that frees an
     # excluded line's. None of its lines reach `by_product` below, so none of them
-    # is passed to `allocate_detailed`, so none of them consumes any of
-    # `available`; the whole of that well's requirement stays on the shelf for the
-    # wells that are in scope. Its `CoverageResult` rows are deleted by
-    # `recompute_customer` (via `excluded_line_ids`) and it rolls up to
-    # `coverage_status = None`, i.e. "not evaluated" -- never "covered".
+    # is passed to the allocator, so none of them consumes any of the pool; the
+    # whole of that well's requirement stays on the shelf for the wells that are in
+    # scope. Its `CoverageResult` rows are deleted by `recompute_business_unit` (via
+    # `excluded_line_ids`) and it rolls up to `coverage_status = None`, i.e. "not
+    # evaluated" -- never "covered".
     included: list[LineView] = []
     excluded: list[LineView] = []
     for view in views:
@@ -710,174 +943,191 @@ def compute_customer_coverage(
     for view in included:
         by_product[view.product_id].append(view)
 
-    policy = customer.allocation_policy
-    assigned_by_line, reserved_by_product = _assignment_context(
-        db, policy, included, customer, resolver
+    assigned_by_line, total_assigned, assignment_block = _assignment_context_bu(
+        db, included, policy_by_customer, customer_of_line, bu_id, resolver
     )
 
     # Every on-hand figure below is BU-resolved up front, in one place. The set
-    # covers the products this pool demands, the products a technical
+    # covers the products this Business Unit demands, the products a technical
     # substitution could reach from them, anything carrying a reservation, and
-    # anything an inventory override names -- i.e. every product whose quantity
-    # this pass can possibly consult.
-    bu_id = customer.business_unit_id
+    # anything an inventory override names -- i.e. every product whose quantity this
+    # pass can possibly consult.
     demanded_ids = set(by_product)
     quantity_ids = (
         demanded_ids
         | _substitute_target_ids(db, demanded_ids)
-        | set(reserved_by_product)
+        | set(total_assigned)
         | set(resolver.inventory_override_product_ids())
     )
     # The BU boundary is applied HERE, before the resolver is consulted, so an
     # inventory override can only ever restate a quantity that already belongs to
-    # this customer's Business Unit. There is no argument a scenario could pass
-    # that would make this read another BU's stock.
-    #
-    # `ownership_pool_map` is used rather than `on_hand_map`, and the difference is
-    # the whole ownership tier: it returns an `OwnershipPool` per product, carrying
-    # the COMPANY-owned quantity (Oracle's projection, BU-scoped, raising when
-    # unknown) beside the CUSTOMER-owned quantity (this platform's own data, scoped
-    # to the customer, never raising). Both rules are applied in that one function --
-    # see `app.engines.inventory` -- so this pass cannot get the tier wrong and no
-    # other consumer can get it differently.
-    pools = ownership_pool_map(db, customer, quantity_ids)
+    # this Business Unit. There is no argument a scenario could pass that would make
+    # this read another BU's stock. A demanded product with no `InventoryOnHand` row
+    # in this BU makes the whole call raise: unknown is not zero.
+    company = on_hand_map(db, bu_id, quantity_ids)
     # Company tier only, and a scenario INVENTORY override may restate only this
-    # one. `OwnershipPool.with_company_owned` is the sole mutator and there is
-    # deliberately no counterpart for the customer tier: an INVENTORY override
-    # restates an `InventoryOnHand` figure, which Oracle owns, and it must not be
-    # able to invent (or delete) a customer's own property. See
-    # `app.engines.overrides.OVERRIDE_FIELDS` for why customer-owned stock is not
-    # an override target at all.
+    # one. There is deliberately no counterpart for the customer tier: an INVENTORY
+    # override restates an `InventoryOnHand` figure, which Oracle owns, and it must
+    # not be able to invent (or delete) a customer's own property. See
+    # `app.engines.overrides.OVERRIDE_FIELDS`.
     on_hand = {
-        product_id: resolver.on_hand(product_id, pool.company_owned)
-        for product_id, pool in pools.items()
+        product_id: resolver.on_hand(product_id, qty)
+        for product_id, qty in company.items()
     }
-    # {product_id: customer-owned quantity}. Additive to `on_hand`, never a
-    # carve-out of it, and never netted against an assignment.
-    customer_owned = {
-        product_id: pool.customer_owned for product_id, pool in pools.items()
-    }
+    # {(customer_id, product_id): customer-owned quantity}. Additive to `on_hand`,
+    # never a carve-out of it, and never netted against an assignment. Scoped to the
+    # customer because one customer's property can never satisfy another's demand --
+    # which is exactly why it is keyed by customer here rather than summed.
+    customer_owned: dict[tuple[str, str], float] = {}
+    for customer in customers:
+        for product_id, position in customer_owned_map(
+            db, customer, set(company)
+        ).items():
+            customer_owned[(customer.id, product_id)] = position.drawable
 
     covered_by_line: dict[str, bool] = {}
     # Which product actually satisfied each line, for CoverageResult
     # .fulfilled_by_product_id. A line covered by its own product maps to that
     # product; a line covered via substitute maps to the substitute.
     fulfilled_by: dict[str, str] = {}
-    # Free (unreserved, unconsumed) on-hand per product after the own-product
-    # allocation, POOL-WIDE. Shared across the substitution fall-through below so
-    # one line's substitute consumption is never double-counted by another line
-    # in the same pass -- in any well of this customer -- and, under HARD/HYBRID,
-    # so inventory earmarked for some other demand line is never offered up as a
-    # substitute either.
-    remaining_qty: dict[str, float] = {}
-    # Quantity each line drew from the shared unassigned POOL of its own product
-    # (its assignment is reported separately in the reason text). Under SOFT/HYBRID
-    # this now includes PARTIAL draws that did not cover the line, which the reason
-    # text has to state -- see `_shortage_phrase`.
+    # THE THREE RESIDUAL TIERS after the own-product allocation, which the
+    # substitution fall-through draws on. They are kept apart rather than summed
+    # because they can never be spent on the same thing: `remaining_shared` is the
+    # Business Unit's unassigned company steel and any line may reach it;
+    # `remaining_owned` is one customer's property and `remaining_block` one SOFT
+    # customer's reservations, and only that customer's lines may reach either.
+    remaining_shared: dict[str, float] = {}
+    remaining_owned: dict[tuple[str, str], float] = {}
+    remaining_block: dict[tuple[str, str], float] = {}
+    # {(customer_id, product_id): qty of that product reserved to demand lines this
+    # customer's lines cannot draw on}. One meaning, for `find_candidates` and for
+    # the reason text.
+    blocked_by_customer: dict[tuple[str, str], float] = {}
+    # Quantity each line drew from the shared unassigned POOL of its own product --
+    # which for a SOFT customer includes its own pooled assignment block, exactly as
+    # the per-customer pass reported it. Includes PARTIAL draws that did not cover
+    # the line, which the reason text has to state -- see `_shortage_phrase`.
     drawn_from_pool: dict[str, float] = {}
+    # The part of `drawn_from_pool` that came from a SOFT customer's own assignment
+    # block. Tracked so that releasing a partial draw (C-17, below) can put each
+    # quantity back where it came from instead of donating a reservation to the
+    # shared pool.
+    drawn_from_block: dict[str, float] = {}
     # Quantity each line drew from its OWN Oracle assignment, kept beside the pool
     # draw so the two halves of "how was this line satisfied" come out of the SAME
-    # AllocationOutcome. Reported on CustomerCoverage; nothing recomputes it.
+    # AllocationOutcome. Reported on the result; nothing recomputes it.
     drawn_from_assignment: dict[str, float] = {}
-    # Quantity each line drew from the CUSTOMER'S OWN uploaded stock, out of the same
-    # AllocationOutcome as the other two. Drawn first under every policy.
+    # Quantity each line drew from its customer's OWN uploaded stock, out of the
+    # same AllocationOutcome as the other two. Drawn first under every policy.
     drawn_from_customer_owned: dict[str, float] = {}
-    # {product_id: qty excluded from `remaining_qty` because it is hard-assigned
-    # to another demand line}, per product, in ONE meaning for `find_candidates`.
-    hard_assigned_by_product: dict[str, float] = {}
-    for product_id, lines in by_product.items():
-        own_assigned = {
-            line.id: assigned_by_line.get((line.id, product_id), 0.0) for line in lines
-        }
-        # Stock assigned to demand lines OUTSIDE this customer's pool is not
-        # available to this pool at all, so it comes off before allocating.
-        #
-        # Under SOFT `own_assigned` is all zeros (assignments do not grant a soft
-        # line coverage), so this subtraction removes nothing and the whole of
-        # `reserved_by_product[P]` nets off. That is exactly why
-        # `_assignment_context` puts ONLY foreign assignments in it under SOFT --
-        # the BU-wide total would carve out this customer's own assignments here
-        # too and destroy pooling. Read the two together; neither is correct alone.
-        reserved_elsewhere = max(
-            0.0, reserved_by_product.get(product_id, 0.0) - sum(own_assigned.values())
-        )
-        # `on_hand[product_id]` is indexed, not `.get()`-with-a-default: every
-        # demanded product is in `quantity_ids`, and `on_hand_map` either returns a
-        # BU-resolved quantity for it or raises. A default here would be a second
-        # policy for a missing quantity -- which is exactly the shim that was
-        # removed.
-        available = max(
-            0.0,
-            resolver.on_hand(product_id, on_hand[product_id]) - reserved_elsewhere,
+
+    lines_by_customer_product: dict[tuple[str, str], list[LineView]] = defaultdict(list)
+    for view in included:
+        lines_by_customer_product[(customer_of_line[view.id], view.product_id)].append(view)
+
+    def _usable_assigned(customer_id: str, product_id: str) -> float:
+        """How much of this product's reserved stock THIS customer's in-scope lines
+        may actually draw on: its own pooled block under SOFT, the sum of its own
+        lines' entitlements otherwise."""
+        return assignment_block.get((customer_id, product_id), 0.0) + sum(
+            assigned_by_line.get((line.id, product_id), 0.0)
+            for line in lines_by_customer_product.get((customer_id, product_id), [])
         )
 
-        outcome = allocate_detailed(
-            policy,
-            lines,
-            available,
-            own_assigned,
-            # The customer's own stock, passed BESIDE `available` rather than added
-            # into it. Adding it would make it indistinguishable from company steel
-            # the moment it entered the function, and every downstream sentence and
-            # dashboard channel depends on telling the two apart.
-            customer_owned.get(product_id, 0.0),
+    for product_id, lines in by_product.items():
+        outcome = allocate_business_unit(
+            lines=lines,
+            company_on_hand=on_hand[product_id],
+            total_assigned=total_assigned.get(product_id, 0.0),
+            assigned_by_line={
+                line.id: assigned_by_line.get((line.id, product_id), 0.0)
+                for line in lines
+            },
+            assignment_block_by_customer={
+                c: assignment_block.get((c, product_id), 0.0) for c in customer_ids
+            },
+            customer_owned_by_customer={
+                c: customer_owned.get((c, product_id), 0.0) for c in customer_ids
+            },
+            policy_by_customer=policy_by_customer,
+            customer_of_line=customer_of_line,
         )
         covered_by_line.update(outcome.covered)
         for line_id, is_covered in outcome.covered.items():
             if is_covered:
                 fulfilled_by[line_id] = product_id
             drawn_from_pool[line_id] = outcome.consumed_from_pool.get(line_id, 0.0)
+            drawn_from_block[line_id] = outcome.consumed_from_assignment_block.get(
+                line_id, 0.0
+            )
             drawn_from_assignment[line_id] = outcome.consumed_from_assignment.get(
                 line_id, 0.0
             )
             drawn_from_customer_owned[line_id] = (
                 outcome.consumed_from_customer_owned.get(line_id, 0.0)
             )
-        # Both residuals, because a SUBSTITUTE draw may legitimately come from
-        # either: the unspent company pool, and the customer's own unspent stock of
-        # this product. Both belong to THIS customer's pool and neither can reach
-        # another customer -- the company residual because `find_candidates` is only
-        # ever asked about this pool's lines, the customer-owned residual because it
-        # is that customer's property and is excluded from sharing entirely.
-        remaining_qty[product_id] = (
-            outcome.remaining_pool + outcome.remaining_customer_owned
-        )
-        hard_assigned_by_product[product_id] = reserved_elsewhere
+        remaining_shared[product_id] = outcome.remaining_pool
+        for c in customer_ids:
+            remaining_owned[(c, product_id)] = (
+                outcome.remaining_customer_owned_by_customer.get(c, 0.0)
+            )
+            remaining_block[(c, product_id)] = (
+                outcome.remaining_assignment_block_by_customer.get(c, 0.0)
+            )
+            blocked_by_customer[(c, product_id)] = max(
+                0.0,
+                total_assigned.get(product_id, 0.0) - _usable_assigned(c, product_id),
+            )
 
-    # Products this pool does not demand directly can still be reached as
-    # substitutes. Seed EVERY such product from the BU-resolved quantity, net of
-    # assignment reservations for the same reason as above.
-    #
-    # Seeding all of them (not merely the ones carrying a reservation) is what
-    # closed the last BU hole back when `find_candidates` had a global fallback
-    # for anything left unseeded. That fallback is gone, so the seed is now also
-    # the thing that keeps this pass answerable at all.
-    #
-    # The two figures are combined with `max`, never a sum: they carry the SAME
-    # meaning (foreign-only under SOFT, BU-wide under HARD/HYBRID -- see
-    # `_hard_assigned_for_substitutes`) and differ only in which products they
-    # cover, so summing would exclude the same steel twice and invent a shortage.
-    # `max` excludes it exactly once whichever map knows about it.
-    substitute_only_ids = {pid for pid in on_hand if pid not in remaining_qty}
-    hard_assigned_subs = _hard_assigned_for_substitutes(
-        db, customer, substitute_only_ids
-    )
+    # Products this Business Unit does not demand directly can still be reached as
+    # SUBSTITUTE targets, so their residual tiers are seeded here on exactly the
+    # same rules -- shared company steel net of every reservation, plus whatever
+    # each customer privately holds of it.
     for product_id, resolved in on_hand.items():
-        if product_id in remaining_qty:
+        if product_id in remaining_shared:
             continue
-        blocked = max(
-            reserved_by_product.get(product_id, 0.0),
-            hard_assigned_subs.get(product_id, 0.0),
+        remaining_shared[product_id] = max(
+            0.0, resolved - total_assigned.get(product_id, 0.0)
         )
-        hard_assigned_by_product[product_id] = blocked
-        # Company stock net of reservations, PLUS whatever this customer owns of the
-        # substitute itself. A customer that uploaded stock of a product it does not
-        # directly demand may still use it to cover a line the product substitutes
-        # for -- it is their property and no reservation can touch it, which is
-        # precisely why `blocked` is subtracted only from the company tier.
-        remaining_qty[product_id] = (
-            max(0.0, resolved - blocked) + customer_owned.get(product_id, 0.0)
-        )
+        for c in customer_ids:
+            remaining_owned[(c, product_id)] = customer_owned.get((c, product_id), 0.0)
+            remaining_block[(c, product_id)] = assignment_block.get(
+                (c, product_id), 0.0
+            )
+            blocked_by_customer[(c, product_id)] = max(
+                0.0,
+                total_assigned.get(product_id, 0.0) - _usable_assigned(c, product_id),
+            )
+
+    def _availability_for(customer_id: str) -> dict[str, float]:
+        """What one customer's lines could actually draw of each product, right now:
+        the shared residual plus that customer's own private residuals."""
+        return {
+            product_id: max(
+                0.0,
+                shared
+                + remaining_owned.get((customer_id, product_id), 0.0)
+                + remaining_block.get((customer_id, product_id), 0.0),
+            )
+            for product_id, shared in remaining_shared.items()
+        }
+
+    def _draw(customer_id: str, product_id: str, quantity: float) -> None:
+        """Take `quantity` of `product_id` for `customer_id`, in ownership order --
+        its own stock first, then its own reservations, then the shared pool."""
+        need = quantity
+        for store, key in (
+            (remaining_owned, (customer_id, product_id)),
+            (remaining_block, (customer_id, product_id)),
+        ):
+            take = min(need, store.get(key, 0.0))
+            if take > 0:
+                store[key] = store.get(key, 0.0) - take
+                need -= take
+        if need > 0:
+            remaining_shared[product_id] = max(
+                0.0, remaining_shared.get(product_id, 0.0) - need
+            )
 
     status_by_line: dict[str, CoverageStatus] = {}
     reason_by_line: dict[str, str | None] = {}
@@ -888,49 +1138,62 @@ def compute_customer_coverage(
             reason_by_line[line.id] = None
 
     # Substitution fall-through: only lines their own product could not cover.
-    # Earliest ROS first ACROSS THE WHOLE POOL so the scarce substitute stock
-    # goes to the most urgent line regardless of which well it belongs to,
-    # matching the pool allocation ordering used above. `remaining_qty` is
-    # pool-scoped, so a substitute quantity spent for one well's line is gone for
-    # every other well's line too.
+    # Earliest ROS first ACROSS THE WHOLE BUSINESS UNIT so the scarce substitute
+    # stock goes to the most urgent line regardless of which customer it belongs to,
+    # matching the allocation ordering used above.
     shortfall = sorted(
         (l for l in included if not covered_by_line.get(l.id, False)),
         key=lambda l: l.ros_date,
     )
-    # {to_product_id: [LineView]} for lines that ended up PENDING_APPROVAL. A
-    # pending substitute now consumes NOTHING (see below), so the scarcity it used
-    # to hide has to be made visible after the pass, once every pending line is
-    # known.
+    # {to_product_id: [LineView]} for lines that ended up PENDING_APPROVAL. A pending
+    # substitute now consumes NOTHING (see below), so the scarcity it used to hide
+    # has to be made visible after the pass, once every pending line is known.
     pending_lines_by_product: dict[str, list[LineView]] = defaultdict(list)
     for line in shortfall:
+        owner_id = customer_of_line[line.id]
         candidates = find_candidates(
             db,
             line,
-            available_qty_by_product=remaining_qty,
+            available_qty_by_product=_availability_for(owner_id),
             approval_override=resolver.approval,
-            hard_assigned_by_product=hard_assigned_by_product,
+            hard_assigned_by_product={
+                product_id: blocked_by_customer.get((owner_id, product_id), 0.0)
+                for product_id in remaining_shared
+            },
         )
 
         usable = next((c for c in candidates if c.usable), None)
         if usable is not None:
             # The substitute covers the WHOLE line, and whatever the line had
-            # already drawn from its own product's pool or the customer's own
-            # stock goes BACK (owner ruling 2026-09-06, C-17): a line is
-            # satisfied by one product, not a mixture, and the released steel is
-            # then available to later substitute draws in this pass. An Oracle
-            # assignment is not released -- it is the line's own reservation and
-            # cannot serve anyone else -- but it is no longer counted as drawn.
-            released = drawn_from_pool.get(line.id, 0.0) + drawn_from_customer_owned.get(
-                line.id, 0.0
-            )
-            if released > 0:
-                remaining_qty[line.product_id] = (
-                    remaining_qty.get(line.product_id, 0.0) + released
+            # already drawn from its own product goes BACK (owner ruling
+            # 2026-09-06, C-17): a line is satisfied by one product, not a mixture,
+            # and the released steel is then available to later draws in this pass.
+            # Each quantity returns to the tier it came from -- a SOFT customer's
+            # reservation block is NOT donated to the shared pool, because that
+            # would release an Oracle reservation. An assignment draw is released
+            # from the line but returns nowhere: it is that line's own reservation
+            # and cannot serve anyone else.
+            from_block = drawn_from_block.get(line.id, 0.0)
+            from_shared = max(0.0, drawn_from_pool.get(line.id, 0.0) - from_block)
+            from_owned = drawn_from_customer_owned.get(line.id, 0.0)
+            if from_owned > 0:
+                remaining_owned[(owner_id, line.product_id)] = (
+                    remaining_owned.get((owner_id, line.product_id), 0.0) + from_owned
+                )
+            if from_block > 0:
+                remaining_block[(owner_id, line.product_id)] = (
+                    remaining_block.get((owner_id, line.product_id), 0.0) + from_block
+                )
+            if from_shared > 0:
+                remaining_shared[line.product_id] = (
+                    remaining_shared.get(line.product_id, 0.0) + from_shared
                 )
             drawn_from_pool[line.id] = 0.0
+            drawn_from_block[line.id] = 0.0
             drawn_from_customer_owned[line.id] = 0.0
             drawn_from_assignment[line.id] = 0.0
-            remaining_qty[usable.to_product_id] = usable.available_qty - line.quantity
+
+            _draw(owner_id, usable.to_product_id, line.quantity)
             covered_by_line[line.id] = True
             fulfilled_by[line.id] = usable.to_product_id
             status_by_line[line.id] = CoverageStatus.COVERED_VIA_SUBSTITUTE
@@ -951,23 +1214,16 @@ def compute_customer_coverage(
             None,
         )
         if pending is not None:
-            # RESERVE NOTHING. A pending substitute holds no quantity back.
-            #
-            # The previous behaviour decremented `remaining_qty` here so that two
-            # lines could not both be promised one quantity. The product owner has
-            # REVERSED that: reserving is itself the platform creating a hard
-            # reservation, and it must never do that --
-            # "Hard allocation cannot be done on the OCTG Platform. On the OCTG
-            # Platform everything is strictly soft."
-            #
-            # The bug that reservation was fixing is real, so it is not simply
-            # reintroduced: the over-subscription is made VISIBLE instead, after
-            # the pass, in both the reason text and the candidate payload. See
-            # `pending_substitute_load` below.
+            # RESERVE NOTHING. A pending substitute holds no quantity back: reserving
+            # is itself the platform creating a hard reservation, and it must never
+            # do that -- "hard allocation cannot be done on the OCTG Platform; on the
+            # OCTG Platform everything is strictly soft". The over-subscription that
+            # reservation used to hide is made VISIBLE instead, after the pass, in
+            # both the reason text and the candidate payload (`pending_substitute_load`).
             #
             # The stock is still NOT marked as fulfilling the line -- nothing has
-            # been drawn, so fulfilled_by stays unset and MRP's runout keeps
-            # charging this line to its own product.
+            # been drawn, so fulfilled_by stays unset and MRP's runout keeps charging
+            # this line to its own product.
             pending_lines_by_product[pending.to_product_id].append(line)
             label = pending.product.description or pending.product.id
             detail = (
@@ -980,14 +1236,14 @@ def compute_customer_coverage(
             # Append the approval-by-date clause -- reuses the SAME
             # order_dates/lead_time arithmetic `app.engines.substitution
             # .approval_by_date` exposes on the candidates payload, computed
-            # directly here (rather than through that public wrapper) because
-            # the CoverageResult row this pass is about to write does not exist
-            # yet -- there is nothing for the wrapper's `applicable` check to
-            # read. Composes with (never duplicates) the Oracle-release /
-            # customer-owned clauses above: those are woven into `base_reason`
-            # via `_shortage_phrase` upstream of the pending branch, and this
-            # branch's own `base_reason` never mentions dates at all, so there
-            # is nothing here for the appended clause to repeat.
+            # directly here (rather than through that public wrapper) because the
+            # CoverageResult row this pass is about to write does not exist yet --
+            # there is nothing for the wrapper's `applicable` check to read.
+            # Composes with (never duplicates) the Oracle-release / customer-owned
+            # clauses: those are woven in via `_shortage_phrase` downstream of the
+            # pending branch, and this branch's own `base_reason` never mentions
+            # dates at all, so there is nothing here for the appended clause to
+            # repeat.
             abd = _approval_by_date_for_product_ros(
                 db, line.id, line.product, line.ros_date
             )
@@ -1006,13 +1262,15 @@ def compute_customer_coverage(
                 )
             # When lead time is not modelled, `abd.available` is False and the
             # clause is silently omitted rather than guessed -- honest absence,
-            # matching the pattern the rest of this reason string already
-            # follows for other unresolvable figures.
+            # matching the pattern the rest of this reason string already follows.
             reason_by_line[line.id] = base_reason
             continue
 
+        policy = policy_by_customer[owner_id]
         line_assigned = assigned_by_line.get((line.id, line.product_id), 0.0)
-        inv_blocked = next((c for c in candidates if c.blocking_layer == BLOCK_INVENTORY), None)
+        inv_blocked = next(
+            (c for c in candidates if c.blocking_layer == BLOCK_INVENTORY), None
+        )
         # A substitute blocked ONLY by somebody else's hard assignment is a
         # different message with a different action -- the steel exists.
         oracle_blocked = next(
@@ -1024,11 +1282,12 @@ def compute_customer_coverage(
             line_assigned,
             standalone=inv_blocked is None and oracle_blocked is None,
             drawn_from_pool=drawn_from_pool.get(line.id, 0.0),
-            # The carve-out this line's OWN product suffered, which is what the
-            # SOFT wording needs in order to name the assignment instead of
-            # blaming the shelf. `hard_assigned_by_product` holds exactly the
-            # `reserved_elsewhere` figure computed for the own-product allocation.
-            reserved_elsewhere=hard_assigned_by_product.get(line.product_id, 0.0),
+            # The carve-out this line's OWN product suffered, which is what the SOFT
+            # wording needs in order to name the reservation instead of blaming the
+            # shelf.
+            reserved_elsewhere=blocked_by_customer.get(
+                (owner_id, line.product_id), 0.0
+            ),
             drawn_from_customer_owned=drawn_from_customer_owned.get(line.id, 0.0),
         )
         if oracle_blocked is not None:
@@ -1048,10 +1307,10 @@ def compute_customer_coverage(
         else:
             base_reason = shortage
 
-        # Last resort: a mill order. If even ordering today cannot land the
-        # material by ROS, the line is UNRECOVERABLE rather than UNCOVERED.
-        # Products with no lead-time components are never judged unrecoverable
-        # -- see app.engines.order_dates.
+        # Last resort: a mill order. If even ordering today cannot land the material
+        # by ROS, the line is UNRECOVERABLE rather than UNCOVERED. Products with no
+        # lead-time components are never judged unrecoverable -- see
+        # app.engines.order_dates.
         #
         # `is_recoverable` reads the EFFECTIVE ros_date, so an ROS push-out in a
         # scenario changes recoverability here -- through the same physics
@@ -1060,7 +1319,9 @@ def compute_customer_coverage(
             status_by_line[line.id] = CoverageStatus.UNCOVERED
             reason_by_line[line.id] = base_reason
         else:
-            _ship, order_by, lead_months = order_feasibility(db, line.product, line.ros_date)
+            _ship, order_by, lead_months = order_feasibility(
+                db, line.product, line.ros_date
+            )
             status_by_line[line.id] = CoverageStatus.UNRECOVERABLE
             reason_by_line[line.id] = (
                 f"{base_reason}; mill order needed {order_by.isoformat()} "
@@ -1068,27 +1329,33 @@ def compute_customer_coverage(
                 "ordered today"
             )
 
-    # ---- Over-subscription of pending substitutes (change 2) ----------------
-    # A pending substitute reserves nothing, so several lines can now legitimately
-    # be told "this substitute could close your gap once approved" about the same
+    # ---- Over-subscription of pending substitutes ---------------------------
+    # A pending substitute reserves nothing, so several lines can legitimately be
+    # told "this substitute could close your gap once approved" about the same
     # steel. That is only honest if the planner can SEE when approving all of them
-    # cannot all succeed, so the arithmetic is done once here, pool-wide, and
-    # rendered in the reason text of EVERY affected line -- not just the losers,
+    # cannot all succeed, so the arithmetic is done once here, Business-Unit-wide,
+    # and rendered in the reason text of EVERY affected line -- not just the losers,
     # because with nothing reserved there are no losers to single out.
     #
-    # `available_qty` is `remaining_qty` as it stands AFTER the whole pass: every
-    # real draw (own-product and approved-substitute) has already happened, and
-    # pending lines took nothing, so this is the quantity actually up for grabs.
+    # `available_qty` is the residual as it stands AFTER the whole pass -- the shared
+    # remainder plus the private remainders of exactly the customers whose lines are
+    # pending on this substitute, since no other customer's stock could reach them.
     pending_substitute_load: list[PendingSubstituteLoad] = []
     for to_product_id, lines_pending in sorted(pending_lines_by_product.items()):
         product = db.get(Product, to_product_id)
+        owners = {customer_of_line[l.id] for l in lines_pending}
+        available = remaining_shared.get(to_product_id, 0.0) + sum(
+            remaining_owned.get((owner, to_product_id), 0.0)
+            + remaining_block.get((owner, to_product_id), 0.0)
+            for owner in owners
+        )
         load = PendingSubstituteLoad(
             to_product_id=to_product_id,
             product_description=(product.description if product is not None else None),
             pending_line_count=len(lines_pending),
             pending_line_ids=tuple(l.id for l in lines_pending),
             pending_required_qty=sum(l.quantity for l in lines_pending),
-            available_qty=max(0.0, remaining_qty.get(to_product_id, 0.0)),
+            available_qty=max(0.0, available),
         )
         pending_substitute_load.append(load)
         note = load.note
@@ -1100,16 +1367,16 @@ def compute_customer_coverage(
             )
 
     def _net(view: LineView) -> tuple[float, float, float, float]:
-        """(customer-owned, company, substitute, residual) for one line -- from
-        the draws this pass recorded, never re-derived. See `LineCoverage`."""
+        """(customer-owned, company, substitute, residual) for one line -- from the
+        draws this pass recorded, never re-derived. See `LineCoverage`."""
         status = status_by_line[view.id]
         owned = drawn_from_customer_owned.get(view.id, 0.0)
         company = drawn_from_pool.get(view.id, 0.0) + drawn_from_assignment.get(
             view.id, 0.0
         )
         if status == CoverageStatus.COVERED_VIA_SUBSTITUTE:
-            # Own-product draws were released when the substitute took the
-            # line (C-17), so `owned`/`company` are 0 here by construction.
+            # Own-product draws were released when the substitute took the line
+            # (C-17), so `owned`/`company` are 0 here by construction.
             return owned, company, view.quantity, 0.0
         if status == CoverageStatus.COVERED:
             return owned, company, 0.0, 0.0
@@ -1134,9 +1401,9 @@ def compute_customer_coverage(
         )
 
     # Rollup rule: a well is Covered only if EVERY included line is Covered or
-    # CoveredViaSubstitute. PendingApproval, Uncovered and Unrecoverable all mean
-    # the well is not covered. A well with no included lines at all has no
-    # coverage status.
+    # CoveredViaSubstitute. PendingApproval, Uncovered and Unrecoverable all mean the
+    # well is not covered. A well with no included lines at all has no coverage
+    # status.
     statuses_by_well: dict[str, list[CoverageStatus]] = defaultdict(list)
     for view in included:
         statuses_by_well[view.well_id].append(status_by_line[view.id])
@@ -1155,18 +1422,279 @@ def compute_customer_coverage(
             CoverageStatus.COVERED.value if all_ok else CoverageStatus.UNCOVERED.value
         )
 
-    return CustomerCoverage(
-        customer_id=customer.id,
+    hard_assigned_by_product: dict[str, dict[str, float]] = defaultdict(dict)
+    for (owner_id, product_id), qty in blocked_by_customer.items():
+        hard_assigned_by_product[owner_id][product_id] = qty
+
+    return BusinessUnitCoverage(
+        business_unit_id=bu_id,
+        customer_ids=tuple(customer_ids),
         by_line=by_line,
         excluded_line_ids=tuple(view.id for view in excluded),
         well_status=well_status,
         included_views=tuple(included),
         all_views=tuple(views),
+        customer_of_line=dict(customer_of_line),
+        wells_by_customer={c: tuple(ws) for c, ws in wells_by_customer.items()},
         pending_substitute_load=tuple(pending_substitute_load),
-        hard_assigned_by_product=dict(hard_assigned_by_product),
+        hard_assigned_by_product={k: dict(v) for k, v in hard_assigned_by_product.items()},
         consumed_from_pool=dict(drawn_from_pool),
         consumed_from_assignment=dict(drawn_from_assignment),
         consumed_from_customer_owned=dict(drawn_from_customer_owned),
+    )
+
+
+def compute_customer_coverage(
+    db: Session,
+    customer: Customer,
+    status_filter: set[DemandStatus] | None = None,
+    profile_filter: set[DemandProfile] | None = None,
+    resolver: OverrideResolver = NO_OVERRIDES,
+) -> CustomerCoverage:
+    """One customer's view of its Business Unit's coverage answer.
+
+    A PROJECTION of `compute_business_unit_coverage`, not a pass of its own. Since
+    the ruling of 2026-09-06 (D01) the unit of allocation is the Business Unit, so a
+    per-customer answer computed in isolation would be exactly the figure that
+    ruling abolished -- one that quietly promised the same steel twice. Every
+    existing consumer keeps this signature and this shape; what it now returns is a
+    slice of a consistent whole.
+
+    Writes nothing. Raises `app.engines.inventory.InventoryScopeMissing` for a
+    customer with no Business Unit -- there is no pool, so there is no verdict --
+    exactly as before, and only when that customer actually has demand to judge.
+    """
+    # No Business Unit means no inventory scope, so there is no pool to allocate
+    # and no honest verdict to return -- with or without demand. Raises
+    # `InventoryScopeMissing`, exactly as the per-customer pass did (it reached the
+    # same refusal through `_assignment_context`), and the callers that isolate a
+    # customer they cannot evaluate keep catching the same exception.
+    scoped_customer_ids(db, customer)
+
+    # Resolved by id, never through `customer.business_unit`: a caller that has
+    # just re-pointed `business_unit_id` (the Administration remap) still holds the
+    # OLD BusinessUnit on that relationship until the instance is expired, and a
+    # pass computed against it would judge the customer in the pool it just left.
+    computed = compute_business_unit_coverage(
+        db,
+        db.get(BusinessUnit, customer.business_unit_id),
+        status_filter=status_filter,
+        profile_filter=profile_filter,
+        resolver=resolver,
+    )
+    return computed.for_customer(customer.id)
+
+
+def _persist_coverage(
+    db: Session,
+    by_line: dict,
+    excluded_line_ids,
+    all_views,
+    well_status: dict,
+) -> None:
+    """Write one computed coverage answer down. The ONLY place a verdict is
+    persisted.
+
+    Split out of `recompute_customer` when the unit of allocation became the
+    Business Unit (D01): the same rows have to be written whether the caller asked
+    for a whole BU or -- in the one remaining case, a customer with no Business
+    Unit -- for a single customer, and two copies of the write would eventually
+    disagree about the deletion of stale rows.
+    """
+    lines_by_id = {view.id: view.line for view in all_views}
+
+    for line_id, verdict in by_line.items():
+        existing = db.get(CoverageResult, line_id)
+        if existing is None:
+            db.add(
+                CoverageResult(
+                    demand_line_id=line_id,
+                    status=verdict.status,
+                    reason=verdict.reason,
+                    fulfilled_by_product_id=verdict.fulfilled_by_product_id,
+                    demand_quantity=verdict.quantity,
+                    drawn_customer_owned=verdict.drawn_customer_owned,
+                    drawn_company=verdict.drawn_company,
+                    drawn_substitute=verdict.drawn_substitute,
+                    residual=verdict.residual,
+                )
+            )
+        else:
+            existing.status = verdict.status
+            existing.reason = verdict.reason
+            existing.fulfilled_by_product_id = verdict.fulfilled_by_product_id
+            existing.demand_quantity = verdict.quantity
+            existing.drawn_customer_owned = verdict.drawn_customer_owned
+            existing.drawn_company = verdict.drawn_company
+            existing.drawn_substitute = verdict.drawn_substitute
+            existing.residual = verdict.residual
+            # Explicit, not onupdate: a re-verified verdict whose VALUE did not
+            # change was still computed now, and an unchanged row is not dirty,
+            # so onupdate would keep serving the first-ever stamp (the C-08
+            # surfacing would then show weeks-old times on fresh verdicts).
+            existing.computed_at = datetime.utcnow()
+
+    # Coverage is DERIVED data, so a result for a line the engine no longer
+    # evaluates is not merely stale, it is misinformation: revise a
+    # Confirmed/Primary line down to Planned or Contingency and its last
+    # PendingApproval verdict would otherwise sit in the table forever, still
+    # being served by GET /wells/{id} and still listed on the Home Dashboard's
+    # "Pending Approvals" card. Delete it. Absence of a row now means exactly one
+    # thing -- "not currently evaluated" -- which MRP treats as unresolved rather
+    # than as fine.
+    for line_id in excluded_line_ids:
+        stale = db.get(CoverageResult, line_id)
+        if stale is not None:
+            db.delete(stale)
+    db.flush()
+    for line in lines_by_id.values():
+        # Drop the cached relationship so callers holding these DemandLines read
+        # the rows we just wrote (or, for excluded lines, the absence of the row
+        # we just deleted) rather than a value cached before this pass.
+        db.expire(line, ["coverage_result"])
+
+    if well_status:
+        for pool_well in (
+            db.query(Well).filter(Well.id.in_(list(well_status))).all()
+        ):
+            pool_well.coverage_status = well_status.get(pool_well.id)
+
+    db.flush()
+
+
+def recompute_business_unit(
+    db: Session,
+    business_unit,
+    status_filter: set[DemandStatus] | None = None,
+    profile_filter: set[DemandProfile] | None = None,
+) -> BusinessUnitCoverage:
+    """Recompute and persist coverage for EVERY customer of `business_unit`.
+
+    THE writer of coverage verdicts since the unit of allocation became the
+    Business Unit (product-owner ruling 2026-09-06, D01). The rules live in
+    `compute_business_unit_coverage`; this is that call plus persistence. It always
+    computes with NO overrides -- the official answer is the answer about the data
+    as it actually is.
+
+    Idempotent, and necessarily WHOLE: a pass that wrote one customer's verdicts
+    and left its neighbours' alone would leave the Business Unit describing a
+    division of steel that no single pass ever computed, which is precisely the
+    incoherence D01 abolished.
+    """
+    computed = compute_business_unit_coverage(
+        db,
+        business_unit,
+        status_filter=status_filter,
+        profile_filter=profile_filter,
+    )
+    _persist_coverage(
+        db,
+        computed.by_line,
+        computed.excluded_line_ids,
+        computed.all_views,
+        computed.well_status,
+    )
+    return computed
+
+
+@dataclass(frozen=True)
+class BusinessUnitRecomputeFailure:
+    """One Business Unit whose pass could not be computed, and who it affects."""
+
+    business_unit_id: str | None
+    business_unit_name: str | None
+    customer_ids: tuple[str, ...]
+    customer_names: tuple[str, ...]
+    reason: str
+
+
+@dataclass(frozen=True)
+class RecomputeSweep:
+    """The outcome of recomputing several Business Units in one transaction."""
+
+    recomputed_customer_ids: tuple[str, ...] = ()
+    recomputed_line_count: int = 0
+    failures: tuple[BusinessUnitRecomputeFailure, ...] = ()
+
+
+def recompute_all_business_units(
+    db: Session,
+    status_filter: set[DemandStatus] | None = None,
+    profile_filter: set[DemandProfile] | None = None,
+    customers: list[Customer] | None = None,
+) -> RecomputeSweep:
+    """Recompute every Business Unit touched by `customers` (all of them by default).
+
+    ONE pass per Business Unit, not one per customer. Since the unit of allocation
+    became the BU (D01) a per-customer loop would recompute the same rows once for
+    every customer in the BU -- identical work, identical result, N times over --
+    and the administrative actions that trigger a full sweep (a lead-time edit, a
+    substitution master-data change, a coverage-scope change, the manual recompute
+    button) all used to be written that way.
+
+    FAILURE IS ISOLATED PER BUSINESS UNIT, which is the honest unit now: an
+    unknown on-hand quantity makes the whole pool unmeasurable, so every customer
+    sharing that pool is affected and all of them are NAMED. A customer with no
+    Business Unit has no pool at all and is reported the same way. One BU's
+    incomplete data must never veto another's, which is the C-07 stance kept at
+    its new granularity.
+
+    Each BU's pass runs in its own SAVEPOINT so a failure part-way through cannot
+    leave that BU's stored verdicts half-erased -- strictly worse than the ones
+    they were replacing.
+    """
+    if customers is None:
+        customers = db.query(Customer).order_by(Customer.name).all()
+
+    # Expanded from the requested customers to EVERY customer of each Business Unit
+    # they belong to. Naming one customer recomputes its whole pool -- that is what
+    # allocating a Business Unit means -- and the report has to say so rather than
+    # claim a narrower blast radius than the write actually had.
+    by_bu: dict[str | None, list[Customer]] = defaultdict(list)
+    for bu_id in {c.business_unit_id for c in customers}:
+        if bu_id is None:
+            by_bu[None] = [c for c in customers if c.business_unit_id is None]
+        else:
+            by_bu[bu_id] = _business_unit_customers(db, bu_id)
+
+    recomputed: list[str] = []
+    line_count = 0
+    failures: list[BusinessUnitRecomputeFailure] = []
+
+    for bu_id, members in by_bu.items():
+        business_unit = db.get(BusinessUnit, bu_id) if bu_id is not None else None
+        try:
+            if business_unit is None:
+                # No pool, so no verdict -- the same refusal a single unmapped
+                # customer gets, raised here so it is reported rather than thrown.
+                scoped_customer_ids(db, members[0])
+                continue
+            with db.begin_nested():
+                computed = recompute_business_unit(
+                    db,
+                    business_unit,
+                    status_filter=status_filter,
+                    profile_filter=profile_filter,
+                )
+            recomputed.extend(c.id for c in members)
+            line_count += len(computed.by_line)
+        except InventoryNotScoped as exc:
+            failures.append(
+                BusinessUnitRecomputeFailure(
+                    business_unit_id=bu_id,
+                    business_unit_name=(
+                        business_unit.name if business_unit is not None else None
+                    ),
+                    customer_ids=tuple(c.id for c in members),
+                    customer_names=tuple(c.name for c in members),
+                    reason=str(exc),
+                )
+            )
+
+    return RecomputeSweep(
+        recomputed_customer_ids=tuple(recomputed),
+        recomputed_line_count=line_count,
+        failures=tuple(failures),
     )
 
 
@@ -1197,13 +1725,13 @@ def recompute_customer(
     rather than returning a verdict; see app.models.customer.Customer for why a
     loud refusal beats the half-working middle state that used to exist.
 
-    Demand scope is the CUSTOMER. Inventory is pooled across all of a customer's
-    wells and NEVER further. Coverage for customer A must not shift because
-    customer B's demand grew -- even inside the same BU -- because that would make
-    a planner's own coverage unpredictable from data they can see. Planners who
-    want to know whether a neighbour's surplus COULD have covered their shortfall
-    ask app.engines.sharing.cross_customer_sharing, a read-only what-if that
-    writes nothing and never leaves the BU.
+    Demand scope is the BUSINESS UNIT (product-owner ruling 2026-09-06, D01).
+    Every in-scope line of every customer in the BU is allocated together, so
+    coverage for customer A DOES shift when customer B's demand grows -- and must,
+    because they draw on one shelf and the alternative was promising the same
+    steel twice. What is still true, and is now enforced tier by tier rather than
+    by keeping the customers apart: a customer's own uploaded stock and an Oracle
+    assignment are never drawn by anybody else.
 
     Allocation is ROS-ordered at the DEMAND LINE level across the whole pool
     -----------------------------------------------------------------------
@@ -1246,8 +1774,8 @@ def recompute_customer(
 
     Customer-owned stock is ADDITIVE to the company pool, never a carve-out of it,
     and it can never be offered to another customer -- it is that customer's
-    property, a boundary tighter than the Business Unit boundary (see
-    `app.engines.sharing`).
+    property, a boundary tighter than the Business Unit boundary and the one wall
+    that survived the pool being shared (D01).
 
     A consequence worth stating: a product this pool demands but which has NO
     `InventoryOnHand` row for this BU makes the whole pass raise
@@ -1255,74 +1783,38 @@ def recompute_customer(
     verdict to return -- a pass that quietly treated it as 0 would report
     Uncovered as though it had measured something.
 
-    Note what the BU figure means for two customers in the SAME BU: each is
-    computed independently against the full BU quantity, so the sum of what the
-    BU has promised its customers can exceed what the BU physically holds. That
-    is deliberate -- customer separation is the point -- and it is exactly why the
-    sharing analysis defines surplus as "what is left after EVERY customer in the
-    BU has taken its own committed quantity", which can legitimately be nothing.
+    Note what the BU figure means for two customers in the SAME BU: it is divided
+    between them once, earliest ROS first, so the sum of what the BU has promised
+    can never exceed what it physically holds. That was not true before D01, and
+    the demo database was the proof -- 49,240 metres promised twice.
     """
-    computed = compute_customer_coverage(
-        db, customer, status_filter=status_filter, profile_filter=profile_filter
-    )
+    if customer.business_unit_id is None:
+        # No Business Unit means no pool: there is nothing to allocate and nothing
+        # to share. `compute_customer_coverage` raises for such a customer the
+        # moment it has demand to judge, exactly as before; a customer with nothing
+        # in scope is written down as unevaluated.
+        computed = compute_customer_coverage(
+            db, customer, status_filter=status_filter, profile_filter=profile_filter
+        )
+        _persist_coverage(
+            db,
+            computed.by_line,
+            computed.excluded_line_ids,
+            computed.all_views,
+            computed.well_status,
+        )
+        return computed
 
-    lines_by_id = {view.id: view.line for view in computed.all_views}
-
-    for line_id, verdict in computed.by_line.items():
-        existing = db.get(CoverageResult, line_id)
-        if existing is None:
-            db.add(
-                CoverageResult(
-                    demand_line_id=line_id,
-                    status=verdict.status,
-                    reason=verdict.reason,
-                    fulfilled_by_product_id=verdict.fulfilled_by_product_id,
-                    demand_quantity=verdict.quantity,
-                    drawn_customer_owned=verdict.drawn_customer_owned,
-                    drawn_company=verdict.drawn_company,
-                    drawn_substitute=verdict.drawn_substitute,
-                    residual=verdict.residual,
-                )
-            )
-        else:
-            existing.status = verdict.status
-            existing.reason = verdict.reason
-            existing.fulfilled_by_product_id = verdict.fulfilled_by_product_id
-            existing.demand_quantity = verdict.quantity
-            existing.drawn_customer_owned = verdict.drawn_customer_owned
-            existing.drawn_company = verdict.drawn_company
-            existing.drawn_substitute = verdict.drawn_substitute
-            existing.residual = verdict.residual
-            # Explicit, not onupdate: a re-verified verdict whose VALUE did not
-            # change was still computed now, and an unchanged row is not dirty,
-            # so onupdate would keep serving the first-ever stamp (the C-08
-            # surfacing would then show weeks-old times on fresh verdicts).
-            existing.computed_at = datetime.utcnow()
-
-    # Coverage is DERIVED data, so a result for a line the engine no longer
-    # evaluates is not merely stale, it is misinformation: revise a
-    # Confirmed/Primary line down to Planned or Contingency and its last
-    # PendingApproval verdict would otherwise sit in the table forever, still
-    # being served by GET /wells/{id} and still listed on the Home Dashboard's
-    # "Pending Approvals" card. Delete it. Absence of a row now means exactly one
-    # thing -- "not currently evaluated" -- which MRP treats as unresolved rather
-    # than as fine.
-    for line_id in computed.excluded_line_ids:
-        stale = db.get(CoverageResult, line_id)
-        if stale is not None:
-            db.delete(stale)
-    db.flush()
-    for line in lines_by_id.values():
-        # Drop the cached relationship so callers holding these DemandLines read
-        # the rows we just wrote (or, for excluded lines, the absence of the row
-        # we just deleted) rather than a value cached before this pass.
-        db.expire(line, ["coverage_result"])
-
-    for pool_well in _customer_wells(db, customer):
-        pool_well.coverage_status = computed.well_status.get(pool_well.id)
-
-    db.flush()
-    return computed
+    # The whole Business Unit, always. Recomputing this customer alone would leave
+    # its neighbours holding verdicts decided against a pool this pass has just
+    # re-divided -- the stale-neighbour defect F05 closed for assignments, and now
+    # a property of every recompute rather than of the callers remembering.
+    return recompute_business_unit(
+        db,
+        db.get(BusinessUnit, customer.business_unit_id),
+        status_filter=status_filter,
+        profile_filter=profile_filter,
+    ).for_customer(customer.id)
 
 
 # ---------------------------------------------------------------------------

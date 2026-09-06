@@ -37,7 +37,7 @@ def test_scenario_records_the_authenticated_creator_not_the_body(client_world):
 
     r = client.post(
         "/scenarios",
-        json={"name": "S", "customer_id": w.acme_id, "created_by": "Somebody Else"},
+        json={"name": "S", "business_unit_id": w.bu_id, "created_by": "Somebody Else"},
     )
     assert r.status_code in (200, 201), r.text
     body = r.json()
@@ -126,7 +126,7 @@ def test_inline_inventory_edits_are_logged_with_the_actor(client_world):
 def test_scenario_apply_attributes_the_approvals_it_decides(client_world):
     client, sf, w = client_world
     uid = _as_admin(client, sf)
-    r = client.post("/scenarios", json={"name": "S", "customer_id": w.acme_id})
+    r = client.post("/scenarios", json={"name": "S", "business_unit_id": w.bu_id})
     sid = r.json()["id"]
     r = client.post(
         f"/scenarios/{sid}/overrides",

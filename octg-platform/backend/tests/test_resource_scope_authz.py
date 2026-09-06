@@ -34,7 +34,7 @@ def _foreign_world(session_factory, product_id):
                           ros_date=datetime.utcnow() + timedelta(days=200), profile=DemandProfile.PRIMARY)
         db.add(line)
         oh = InventoryOnHand(business_unit_id=bu.id, product_id=product_id, quantity=500.0); db.add(oh)
-        sc = Scenario(name="Foreign what-if", customer_id=cust.id, status=ScenarioStatus.DRAFT, created_by="x"); db.add(sc)
+        sc = Scenario(name="Foreign what-if", business_unit_id=bu.id, status=ScenarioStatus.DRAFT, created_by="x"); db.add(sc)
         db.commit()
         return dict(bu=bu.id, customer=cust.id, well=well.id, line=line.id, on_hand=oh.id, scenario=sc.id)
 
@@ -113,11 +113,11 @@ def test_a_foreign_customer_in_a_json_body_is_refused_with_zero_writes(planner_a
     client, sf, w, f, h = planner_and_foreign
     with sf() as db:
         before = db.query(Scenario).count()
-    r = client.post("/scenarios", json={"name": "x", "customer_id": f["customer"], "created_by": "p"}, headers=h)
+    r = client.post("/scenarios", json={"name": "x", "business_unit_id": f["bu"], "created_by": "p"}, headers=h)
     assert r.status_code == 403, r.text
     with sf() as db:
         assert db.query(Scenario).count() == before
-    assert client.post("/scenarios", json={"name": "ok", "customer_id": w.acme_id, "created_by": "p"}, headers=h).status_code == 201
+    assert client.post("/scenarios", json={"name": "ok", "business_unit_id": w.bu_id, "created_by": "p"}, headers=h).status_code == 201
 
 
 def test_a_foreign_bu_in_a_json_body_is_refused(planner_and_foreign):
@@ -130,7 +130,7 @@ def test_an_own_scenario_cannot_target_a_foreign_line(planner_and_foreign):
     """The batch ruling in miniature: an override that reaches across the wall
     refuses the whole request, even though the scenario itself is ours."""
     client, sf, w, f, h = planner_and_foreign
-    sc = client.post("/scenarios", json={"name": "mine", "customer_id": w.acme_id, "created_by": "p"}, headers=h).json()
+    sc = client.post("/scenarios", json={"name": "mine", "business_unit_id": w.bu_id, "created_by": "p"}, headers=h).json()
     r = client.post(f"/scenarios/{sc['id']}/overrides", json={
         "target_kind": "demand_line", "field_name": "quantity",
         "target_demand_line_id": f["line"], "value_number": 5,
