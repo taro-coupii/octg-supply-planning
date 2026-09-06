@@ -24,6 +24,13 @@ Three policies, one per customer (see app.models.customer.AllocationPolicy):
 Assignment data is an Oracle-owned local projection -- see
 app.models.inventory_assignment.InventoryAssignment.
 
+EQUAL-ROS TIE-BREAK
+-------------------
+"Earliest ROS first" needs an answer for two lines due the same instant, and the
+answer is `allocation_order` below: Primary before Contingency, then line id
+(product-owner ruling 2026-09-06). The same key orders every contest in
+app.engines.coverage, and the line that lost a tie is told where the steel went.
+
 PARTIAL CONSUMPTION BY EARLIEST ROS
 -----------------------------------
 Under SOFT and HYBRID a line draws whatever the pool can give it, in
@@ -179,7 +186,34 @@ app.engines.coverage.recompute_customer.
 
 from dataclasses import dataclass, field
 
-from app.models import AllocationPolicy, DemandLine
+from app.models import AllocationPolicy, DemandLine, DemandProfile
+
+
+def allocation_order(line) -> tuple:
+    """THE ONE ORDER in which demand lines contest anything in a Business Unit.
+
+    Earliest ROS first. At an EQUAL ROS -- the same instant, which is what the
+    sort treats as a tie -- a Primary line goes before a Contingency line, and two
+    lines of the same profile are ordered by their line id (product-owner ruling
+    2026-09-06: "Primary > Contingency, then line id").
+
+    Why the profile: a contingency string is the back-up plan for a well, and a
+    planner can tell a customer "your back-up string lost to somebody's primary
+    string" -- whereas nobody can explain a uuid. Why the id and not the customer:
+    the owner rejected a customer-priority ordering; urgency decides, and after
+    urgency the tie-break only has to be FIXED so that two identical recomputes
+    hand the last metre to the same line. It is fixed, not meaningful: the id is
+    a random uuid, so its order says nothing about which line was entered first.
+    The reason text written for a line that lost such a tie says exactly that
+    (see `app.engines.coverage`), rather than dressing the tie-break up as a
+    judgement.
+
+    Every contest uses this key -- the own-product allocation below, the
+    substitution fall-through and the pending-substitute over-subscription count in
+    `app.engines.coverage` -- so a line's rank is the same wherever steel runs
+    out. Works on `DemandLine` and on `app.engines.overrides.LineView` alike.
+    """
+    return (line.ros_date, line.profile != DemandProfile.PRIMARY, line.id)
 
 
 @dataclass
@@ -373,10 +407,11 @@ def allocate_business_unit(
     also as before. HYBRID and SOFT draw partially and the quantity is genuinely
     spent, which is what makes the trade-off auditable.
 
-    ORDERING: earliest ROS first across the WHOLE Business Unit, ties broken by the
-    caller's order (`app.engines.coverage` sorts by `(ros_date, id)`, so the total
-    order is deterministic and does not depend on which customer a line belongs
-    to). The owner rejected a customer-priority ordering; urgency decides.
+    ORDERING: `allocation_order` -- earliest ROS first across the WHOLE Business
+    Unit; at an equal ROS Primary before Contingency, then line id (owner ruling
+    2026-09-06). The order is total and deterministic and does not depend on which
+    customer a line belongs to, nor on the order the caller passes the lines in.
+    The owner rejected a customer-priority ordering; urgency decides.
     """
     shared_pool = max(0.0, company_on_hand - max(0.0, total_assigned))
     owned = {c: max(0.0, q) for c, q in customer_owned_by_customer.items()}
@@ -393,7 +428,7 @@ def allocate_business_unit(
     physical = max(0.0, company_on_hand)
     outcome = AllocationOutcome(remaining_pool=shared_pool)
 
-    for line in sorted(lines, key=lambda l: l.ros_date):
+    for line in sorted(lines, key=allocation_order):
         customer_id = customer_of_line[line.id]
         policy = policy_by_customer[customer_id]
         need = line.quantity

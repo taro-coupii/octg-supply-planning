@@ -233,7 +233,7 @@ The discipline kept consistent across this codebase. New features follow it.
 
 1. **Never fabricate numbers.** Always distinguish "unknown" from "zero". Return `available: false` plus a `reason`, and never render it as a 0 or a dash (`InventoryOnHand` missing → a 424 exception; `InventoryOnOrder` missing → `available:false`; `CustomerOwnedInventory` not uploaded → `has_uploaded:false`).
 2. **Make invalid states unrepresentable.** Rather than validating against them, shape the model so they cannot exist (e.g. `demand_status` sits once on `Well` and not on `DemandLine`).
-3. **The BU is an absolute boundary and the unit of allocation.** Inventory can never cross a BU, and inside one it is divided ONCE across every customer below it, earliest ROS first (ruled 2026-09-06, D01). What stays customer-private is ownership, not pooling: customer-owned stock and Oracle assignments are never drawn by anyone else.
+3. **The BU is an absolute boundary and the unit of allocation.** Inventory can never cross a BU, and inside one it is divided ONCE across every customer below it, earliest ROS first (ruled 2026-09-06, D01). At an equal ROS a Primary line is served before a Contingency line, then line id — a fixed order, not a priority — and the line that lost such a tie is told so (ruled 2026-09-06, §23). What stays customer-private is ownership, not pooling: customer-owned stock and Oracle assignments are never drawn by anyone else.
 4. **Customer-owned inventory is consumed before company-owned**, and is never shared with another customer (a stricter rule than the BU boundary).
 5. **The platform never creates, releases or overrides a hard reservation.** The Oracle family (`InventoryOnHand` / `InventoryAssignment` / `InventoryOnOrder`) is a read-only projection. Only `CustomerOwnedInventory` is platform-owned and writable.
 6. **Coverage is always written by the engine.** There is no manual setting. No `CoverageResult` means "not evaluated" — never "no problem".
@@ -564,3 +564,36 @@ stock already spoken for; the seed quantities want re-tuning.
 
 **Next**: C-12 / C-14 / login rate limiting, D02 (the PO-versus-coverage
 specification contradiction), D03 / D04.
+
+## 23. 2026-09-06: the equal-ROS tie-break (owner ruling)
+
+**Problem**: "earliest ROS first" had no answer for two lines due the same
+instant. In practice the tie fell to line-id (uuid4) order — stable, but nothing
+a planner could explain. The demo holds no ties; real data routinely puts a
+well's Primary and Contingency lines on the same ROS.
+
+**Ruling (AskUserQuestion)**: option A — **Primary before Contingency, then line
+id**. No customer priority (ROS → profile → id).
+
+**Implementation (750 tests)**:
+1. `app/engines/allocation.py allocation_order(line)` — `(ros_date, profile !=
+   PRIMARY, id)`. **Every contest** in a Business Unit uses this one key: the
+   own-product allocation (`allocate_business_unit`), the substitution
+   fall-through and the pending-substitute over-subscription count.
+2. **Reason text**: a line that lost a tie gets "this line's own product was drawn
+   ahead of it at the same ROS by WELL-X (Bravo, Primary): at an equal ROS a
+   Primary line is served before a Contingency line". Between two lines of the
+   same profile it says, honestly, "fixed equal-ROS tie-break (Primary before
+   Contingency, then line id — a fixed order, not a judgement of priority)" —
+   the id is a uuid4, so it does NOT claim the winner was "entered first". Only a
+   winner that drew from a tier the loser could reach is named (a HARD line is
+   never in the shared-pool contest; a neighbour spending its own customer-owned
+   stock is not named either). Computed before the C-17 release so the record
+   survives a winner later being rescued by a substitute.
+3. Tests: `tests/test_ros_tie_break.py` (9). `tests/test_scenario_engine.py
+   _line` gained `profile / ros_date / line_id`.
+
+**Effect on the demo**: none (no ties; dev.db verdicts and reasons diff to zero).
+
+**Next**: ② the Executive label for a SOFT customer's own reservation, ③ the demo
+re-baseline, C-12 / C-14 / login rate limiting, D02–D04.

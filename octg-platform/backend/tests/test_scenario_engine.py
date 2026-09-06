@@ -211,11 +211,22 @@ def _well(db, node, name, demand_status=DemandStatus.CONFIRMED):
     return well
 
 
-def _line(db, well, product, quantity, days_out=FAR_ROS_DAYS):
+def _line(
+    db, well, product, quantity, days_out=FAR_ROS_DAYS,
+    profile=DemandProfile.PRIMARY, ros_date=None, line_id=None,
+):
+    """`ros_date` (exact) beats `days_out` when given, so two lines can be made to
+    tie to the instant; `line_id` pins the id so a test can state which of two
+    equal lines the fixed tie-break ranks first instead of hoping."""
+    kwargs = {"id": line_id} if line_id is not None else {}
     line = DemandLine(
         well_id=well.id, product_id=product.id, quantity=quantity,
-        ros_date=datetime.utcnow() + timedelta(days=days_out),
-        profile=DemandProfile.PRIMARY,
+        ros_date=(
+            ros_date if ros_date is not None
+            else datetime.utcnow() + timedelta(days=days_out)
+        ),
+        profile=profile,
+        **kwargs,
     )
     db.add(line)
     db.flush()

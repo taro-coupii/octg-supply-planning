@@ -4,7 +4,11 @@ from datetime import datetime
 
 from sqlalchemy.orm import Session
 
-from app.engines.allocation import allocate_business_unit, allocate_detailed
+from app.engines.allocation import (
+    allocate_business_unit,
+    allocate_detailed,
+    allocation_order,
+)
 # The two filters, and the resolver that decides which pair is actually in force.
 #
 # THE CONSTANTS ARE RE-EXPORTED FROM HERE ON PURPOSE. They were defined in this
@@ -247,6 +251,73 @@ def _shortage_phrase(
     )
 
 
+def _equal_ros_tie_note(
+    line,
+    *,
+    rivals,
+    policy: AllocationPolicy,
+    customer_of_line: dict[str, str],
+    customer_name_by_id: dict[str, str],
+    drawn_from_pool: dict[str, float],
+    drawn_from_block: dict[str, float],
+    drawn_from_customer_owned: dict[str, float],
+) -> str | None:
+    """Where the steel went when this line lost an EQUAL-ROS contest, or None.
+
+    `rivals` are the lines of the same product in the same pass. A rival counts
+    only if it ranks ahead of `line` under `allocation_order` AT THE SAME ROS and
+    actually drew from a tier this line could have reached: the shared pool (never
+    reachable by a HARD line), or -- for a rival of the same customer -- that
+    customer's own reservation block or customer-owned stock. A neighbour spending
+    its own property is not a contest this line took part in, so it is not named.
+
+    The sentence states the rule that decided the tie, and states it honestly:
+    Primary before Contingency is a judgement the owner made; the line-id order
+    after that is fixed and arbitrary, and the text says so rather than implying
+    the winner was entered first or matters more.
+    """
+    owner_id = customer_of_line[line.id]
+    rank = allocation_order(line)
+    winners = []
+    for other in rivals:
+        if other.id == line.id or other.ros_date != line.ros_date:
+            continue
+        if allocation_order(other) >= rank:
+            continue
+        from_shared = max(
+            0.0, drawn_from_pool.get(other.id, 0.0) - drawn_from_block.get(other.id, 0.0)
+        )
+        same_customer = customer_of_line[other.id] == owner_id
+        reachable = (policy != AllocationPolicy.HARD and from_shared > 0) or (
+            same_customer
+            and (
+                drawn_from_block.get(other.id, 0.0) > 0
+                or drawn_from_customer_owned.get(other.id, 0.0) > 0
+            )
+        )
+        if reachable:
+            winners.append(other)
+    if not winners:
+        return None
+
+    def _label(view) -> str:
+        well = view.well.name if view.well is not None else view.well_id
+        who = customer_name_by_id.get(customer_of_line[view.id], "another customer")
+        return f"{well} ({who}, {view.profile.value})"
+
+    names = ", ".join(_label(w) for w in winners)
+    lead = f"this line's own product was drawn ahead of it at the same ROS by {names}"
+    if line.profile == DemandProfile.CONTINGENCY and all(
+        w.profile == DemandProfile.PRIMARY for w in winners
+    ):
+        return f"{lead}: at an equal ROS a Primary line is served before a Contingency line"
+    return (
+        f"{lead}, which ranks ahead of it under the fixed equal-ROS tie-break "
+        "(Primary before Contingency, then line id -- a fixed order, not a "
+        "judgement of priority)"
+    )
+
+
 def _substitute_target_ids(db: Session, product_ids: set[str]) -> set[str]:
     """Products reachable as a technical substitute from any of `product_ids`.
 
@@ -287,8 +358,8 @@ def _hard_assigned_for_substitutes(
     must never do.
 
     The owner's ruling is narrow: the stock may be OFFERED as a candidate, but
-    the platform may not take it -- "the user must go into Oracle themselves and
-    release the hard assignment". So this query is deliberately narrow too. It is used ONLY
+    the platform may not take it -- 「ユーザー自身でoracleに入ってハード割り当て
+    を外す必要あり」. So this query is deliberately narrow too. It is used ONLY
     for the substitution fall-through, for products this pool does not itself
     demand.
 
@@ -783,10 +854,12 @@ def compute_business_unit_coverage(
     # earlier pass (when it had none) would keep reporting none, silently dropping
     # later-inserted demand out of the pool. A query cannot go stale that way.
     #
-    # Deterministic total order (ROS, then id as the tie-break) across the WHOLE
-    # Business Unit. Without it the contest between two customers' equally urgent
-    # lines would be decided by whatever order the database happened to return, and
-    # two identical recomputes could hand the last metre to different customers.
+    # Queried in (ROS, id) order for a stable read; the order that DECIDES every
+    # contest is `app.engines.allocation.allocation_order` (ROS, then Primary before
+    # Contingency, then id), applied explicitly by every sort below. Without a total
+    # order the contest between two customers' equally urgent lines would be decided
+    # by whatever order the database happened to return, and two identical
+    # recomputes could hand the last metre to different customers.
     pool_lines = (
         db.query(DemandLine)
         .join(Well, DemandLine.well_id == Well.id)
@@ -1025,13 +1098,44 @@ def compute_business_unit_coverage(
             status_by_line[line.id] = CoverageStatus.COVERED
             reason_by_line[line.id] = None
 
+    # ---- Equal-ROS ties, stated for the line that lost them -------------------
+    # At an identical ROS the contest is decided by `allocation_order` (Primary
+    # before Contingency, then line id -- owner ruling 2026-09-06). The loser's
+    # reason has to say so: "insufficient inventory" alone leaves a planner unable
+    # to explain why the well next door, due the very same day, got the steel.
+    #
+    # Only a winner that drew from a tier THIS line could reach is named -- the
+    # shared pool for a non-HARD loser, or the loser's own customer's private
+    # tiers -- because a neighbour spending its own property was never a contest
+    # this line was in. Computed HERE, before the fall-through below, because a
+    # winner later rescued by a substitute has its own-product draw released
+    # (C-17) and the record of who took the steel at allocation time would be gone.
+    customer_name_by_id = {c.id: c.name for c in customers}
+    tie_note_by_line: dict[str, str] = {}
+    for line in included:
+        if covered_by_line.get(line.id, False):
+            continue
+        note = _equal_ros_tie_note(
+            line,
+            rivals=by_product.get(line.product_id, []),
+            policy=policy_by_customer[customer_of_line[line.id]],
+            customer_of_line=customer_of_line,
+            customer_name_by_id=customer_name_by_id,
+            drawn_from_pool=drawn_from_pool,
+            drawn_from_block=drawn_from_block,
+            drawn_from_customer_owned=drawn_from_customer_owned,
+        )
+        if note is not None:
+            tie_note_by_line[line.id] = note
+
     # Substitution fall-through: only lines their own product could not cover.
-    # Earliest ROS first ACROSS THE WHOLE BUSINESS UNIT so the scarce substitute
-    # stock goes to the most urgent line regardless of which customer it belongs to,
-    # matching the allocation ordering used above.
+    # `allocation_order` ACROSS THE WHOLE BUSINESS UNIT -- earliest ROS first, then
+    # Primary before Contingency, then id -- so the scarce substitute stock goes to
+    # the most urgent line regardless of which customer it belongs to, and a line's
+    # rank is the same one the allocation above used.
     shortfall = sorted(
         (l for l in included if not covered_by_line.get(l.id, False)),
-        key=lambda l: l.ros_date,
+        key=allocation_order,
     )
     # {to_product_id: [LineView]} for lines that ended up PENDING_APPROVAL. A pending
     # substitute now consumes NOTHING (see below), so the scarcity it used to hide
@@ -1151,6 +1255,8 @@ def compute_business_unit_coverage(
             # When lead time is not modelled, `abd.available` is False and the
             # clause is silently omitted rather than guessed -- honest absence,
             # matching the pattern the rest of this reason string already follows.
+            if line.id in tie_note_by_line:
+                base_reason += f"; {tie_note_by_line[line.id]}"
             reason_by_line[line.id] = base_reason
             continue
 
@@ -1178,6 +1284,8 @@ def compute_business_unit_coverage(
             ),
             drawn_from_customer_owned=drawn_from_customer_owned.get(line.id, 0.0),
         )
+        if line.id in tie_note_by_line:
+            shortage = f"{shortage}; {tie_note_by_line[line.id]}"
         if oracle_blocked is not None:
             label = oracle_blocked.product.description or oracle_blocked.product.id
             base_reason = (
@@ -1244,7 +1352,7 @@ def compute_business_unit_coverage(
             for owner in {customer_of_line[l.id] for l in lines_pending}
         }
         contested = 0.0
-        for pending_line in sorted(lines_pending, key=lambda l: l.ros_date):
+        for pending_line in sorted(lines_pending, key=allocation_order):
             owner = customer_of_line[pending_line.id]
             from_private = min(pending_line.quantity, private.get(owner, 0.0))
             private[owner] = private.get(owner, 0.0) - from_private
