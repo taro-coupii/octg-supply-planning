@@ -913,6 +913,23 @@ def compute_customer_coverage(
 
         usable = next((c for c in candidates if c.usable), None)
         if usable is not None:
+            # The substitute covers the WHOLE line, and whatever the line had
+            # already drawn from its own product's pool or the customer's own
+            # stock goes BACK (owner ruling 2026-09-06, C-17): a line is
+            # satisfied by one product, not a mixture, and the released steel is
+            # then available to later substitute draws in this pass. An Oracle
+            # assignment is not released -- it is the line's own reservation and
+            # cannot serve anyone else -- but it is no longer counted as drawn.
+            released = drawn_from_pool.get(line.id, 0.0) + drawn_from_customer_owned.get(
+                line.id, 0.0
+            )
+            if released > 0:
+                remaining_qty[line.product_id] = (
+                    remaining_qty.get(line.product_id, 0.0) + released
+                )
+            drawn_from_pool[line.id] = 0.0
+            drawn_from_customer_owned[line.id] = 0.0
+            drawn_from_assignment[line.id] = 0.0
             remaining_qty[usable.to_product_id] = usable.available_qty - line.quantity
             covered_by_line[line.id] = True
             fulfilled_by[line.id] = usable.to_product_id
@@ -1091,6 +1108,8 @@ def compute_customer_coverage(
             view.id, 0.0
         )
         if status == CoverageStatus.COVERED_VIA_SUBSTITUTE:
+            # Own-product draws were released when the substitute took the
+            # line (C-17), so `owned`/`company` are 0 here by construction.
             return owned, company, view.quantity, 0.0
         if status == CoverageStatus.COVERED:
             return owned, company, 0.0, 0.0
