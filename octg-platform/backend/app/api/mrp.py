@@ -97,11 +97,19 @@ def get_mrp_summary(
 
 
 @router.get("/by-item/{product_id}", response_model=ByItemAnalysisOut)
-def get_by_item(product_id: str, db: Session = Depends(get_db)):
+def get_by_item(
+    product_id: str,
+    db: Session = Depends(get_db),
+    bu_scope: str | None = Depends(planner_bu),
+):
     """MRP Layer 2: consuming wells, inventory position, runout curve and the
-    recommendation overlaid on that timeline."""
+    recommendation overlaid on that timeline.
+
+    A planner gets their Business Unit's position and demand (C-15); an
+    administrator the system-wide view. `/mrp/lead-time/{id}` needs no scoping:
+    lead time is master data, not stock."""
     try:
-        analysis = by_item(db, product_id)
+        analysis = by_item(db, product_id, business_unit_id=bu_scope)
     except ValueError:
         raise HTTPException(status_code=404, detail="Product not found")
     return ByItemAnalysisOut.model_validate(analysis, from_attributes=True)

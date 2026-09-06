@@ -514,3 +514,9 @@ An external adversarial review arrived with ten reproduced scenarios. **Nothing 
 2. **F08** `Scenario.version` (+1 on metadata change, override add/delete, apply). The preview reports `scenario_version`; `POST /apply` requires `expected_version` (missing = 422, mismatch = 409 with nothing written). The editor sends the previewed version and disables apply, with the reason shown, while the impact on screen is stale.
 
 **Next**: C-15 (by-item BU scope) → rulings on D01/D02 and C-17 → C-12 / C-14 / login rate limiting.
+
+## 21. 2026-09-06: C-15 — By Item confined to the planner's BU
+
+`by_item(db, product_id, business_unit_id=)` confines both the inventory position (`_inventory_position`) and the demand charged to the product (`_lines_charged_to` → `_included_lines`) to one BU; `/mrp/by-item` takes `planner_bu`. Administrators keep the system-wide view. A BU with no on-hand row for the product answers `InventoryRowMissing` (424), as the MOR grid does. `/mrp/lead-time` reads master data, not stock, and is untouched. With this every boundary finding of the review (F01/F02/C-13/C-15) is closed. 745 tests.
+
+**Next**: rulings on D01/D02 and C-17 → C-12 / C-14 / login rate limiting.

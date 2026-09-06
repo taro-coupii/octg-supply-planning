@@ -203,7 +203,7 @@ notifications ordering deliberately left open until valuation lands.
    - Admin surface: extends **Product Workspace** (not a new Administration tab)
 2. Security — ~~apply `require_admin` to the /admin routes~~ (done 2026-09-06, writes only
    by ruling); ~~C-13 object-level authorization and list filtering~~ (done 2026-09-06 except
-   `/mrp/by-item`, tracked as C-15); C-12 (remove the AUTH_SECRET dev fallback); C-14
+   `/mrp/by-item`, closed the same day as C-15); C-12 (remove the AUTH_SECRET dev fallback); C-14
    (`?access_token=` download links); login rate limiting. Must be closed before pilot
    exposure regardless of pilot date — ordering vs. item 3 below intentionally undecided
 2b. From the 2026-09-06 adversarial review, ruled and queued: ~~F04 net shortfall with a

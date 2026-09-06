@@ -860,6 +860,7 @@ def _analyses(
     db: Session,
     recommendations: list[MrpRecommendation],
     today: date | None,
+    business_unit_id: str | None = None,
 ) -> tuple[list[ByItemAnalysis], list[tuple[str, str]]]:
     """`by_item` for each DISTINCT recommended product, in summary-sheet order.
 
@@ -884,7 +885,9 @@ def _analyses(
             continue
         seen.add(rec.product_id)
         try:
-            analyses.append(by_item(db, rec.product_id, today=today))
+            analyses.append(
+                by_item(db, rec.product_id, today=today, business_unit_id=business_unit_id)
+            )
         except Exception as exc:  # noqa: BLE001 -- reported, never swallowed
             unavailable.append(
                 (
@@ -937,7 +940,9 @@ def build_mrp_export(
         business_unit_id=business_unit_id,
         today=today
     )
-    analyses, unavailable = _analyses(db, recommendations, today)
+    # The By Item tabs are scoped like the summary they explain (C-15): a
+    # planner's workbook must not show another BU's stock on its detail sheets.
+    analyses, unavailable = _analyses(db, recommendations, today, business_unit_id)
 
     workbook = Workbook()
     summary = workbook.active

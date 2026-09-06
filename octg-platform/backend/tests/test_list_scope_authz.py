@@ -79,6 +79,21 @@ def test_system_wide_mrp_views_become_the_planner_bu_view(scoped):
     assert "spreadsheet" in export.headers["content-type"]
 
 
+def test_by_item_is_the_planner_bu_position(scoped):
+    """C-15, the remainder of F01. The foreign BU holds 500 of the product and
+    demands 100 of it; neither may reach a planner's By Item page."""
+    client, sf, w, f, planner, admin = scoped
+    mine = client.get(f"/mrp/by-item/{w.p_a_id}", headers=planner).json()
+    theirs = client.get(f"/mrp/by-item/{w.p_a_id}", headers=admin).json()
+    assert mine["inventory"]["on_hand"] == 6000
+    assert theirs["inventory"]["on_hand"] == 6500
+    assert f["line"] not in {l["demand_line_id"] for l in mine["demand_lines"]}
+    assert f["line"] in {l["demand_line_id"] for l in theirs["demand_lines"]}
+    # Lead time is master data, not stock: answerable to anyone who can see the
+    # product.
+    assert client.get(f"/mrp/lead-time/{w.p_a_id}", headers=planner).status_code == 200
+
+
 def test_executive_and_surplus_default_to_the_planner_bu(scoped):
     client, sf, w, f, planner, admin = scoped
     ex = client.get("/dashboard/executive", headers=planner).json()

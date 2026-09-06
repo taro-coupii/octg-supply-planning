@@ -871,7 +871,9 @@ def _charged_product_id(db: Session, line: DemandLine) -> str:
     return line.product_id
 
 
-def _lines_charged_to(db: Session, product_id: str) -> list[DemandLine]:
+def _lines_charged_to(
+    db: Session, product_id: str, business_unit_id: str | None = None
+) -> list[DemandLine]:
     """Every included demand line whose consumption is charged to `product_id`.
 
     This is NOT "lines whose product_id matches". A line of product P covered via
@@ -882,7 +884,7 @@ def _lines_charged_to(db: Session, product_id: str) -> list[DemandLine]:
     """
     return [
         line
-        for line in _included_lines(db)
+        for line in _included_lines(db, business_unit_id=business_unit_id)
         if _charged_product_id(db, line) == product_id
     ]
 
@@ -1036,8 +1038,19 @@ def _inventory_position(
     )
 
 
-def by_item(db: Session, product_id: str, today: date | None = None) -> ByItemAnalysis:
+def by_item(
+    db: Session,
+    product_id: str,
+    today: date | None = None,
+    business_unit_id: str | None = None,
+) -> ByItemAnalysis:
     """Layer 2: full per-product justification for `product_id`.
+
+    `business_unit_id` confines BOTH halves -- the inventory position and the
+    demand charged against it -- to one Business Unit (C-15, the remainder of
+    F01): a planner's By Item is their BU's By Item. None is the system-wide view
+    an administrator sees. A BU with no on-hand row for the product raises
+    `InventoryRowMissing` (unknown is not zero), as the MOR grid does.
 
     Raises ValueError if the product does not exist.
     """
@@ -1048,9 +1061,9 @@ def by_item(db: Session, product_id: str, today: date | None = None) -> ByItemAn
     # Resolved BEFORE anything else is computed, so a product whose on-hand
     # quantity is unknown fails the whole call rather than returning a report with
     # one silently-fabricated number in it.
-    position = _inventory_position(db, product)
+    position = _inventory_position(db, product, business_unit_id=business_unit_id)
 
-    lines = _lines_charged_to(db, product_id)
+    lines = _lines_charged_to(db, product_id, business_unit_id=business_unit_id)
     lines.sort(key=lambda l: l.ros_date)
 
     out_lines = []
