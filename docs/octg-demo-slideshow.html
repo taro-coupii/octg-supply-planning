@@ -205,20 +205,20 @@
     </div>
   </div>
 
-  <div class="slide" data-narr="A read-only what-if checks whether this uncovered demand could be closed by sharing stock inside the BU. Demo Operator B's Merlin-05 comes back as coverable from surplus stock in the same Business Unit.">
-    <div class="step-tag">Step 8 · Verifying stock sharing within the BU</div>
-    <h1>Cross-customer sharing what-if</h1>
+  <div class="slide" data-narr="Inventory is divided once across every customer of a Business Unit, earliest need first, so the same steel is never promised twice. Demo Operator B's Merlin-05 is short after that division, and the reason names what would have to change.">
+    <div class="step-tag">Step 8 · One Business Unit, one division of the steel</div>
+    <h1>Allocation is Business-Unit wide</h1>
     <div class="mock">
-      <div class="mock-bar"><span>localhost:5173/analysis/sharing — Demo Operator B</span><span>●●●</span></div>
+      <div class="mock-bar"><span>localhost:5173/coverage — North Sea Operations</span><span>●●●</span></div>
       <div class="mock-body">
-        <div class="callout">PROJECTION — NOT SAVED. Sharing is evaluated within one Business Unit only. It deliberately disagrees with the official customer-scoped verdict.</div>
+        <div class="callout">The pool is contested ONCE across every customer of the Business Unit, in order of need. What the BU has promised can never exceed what it holds.</div>
         <div class="kpi-row">
-          <div class="kpi"><div class="v">2</div><div class="l">Uncovered lines examined</div></div>
-          <div class="kpi"><div class="v">2</div><div class="l">Would be covered by sharing</div></div>
-          <div class="kpi"><div class="v">0</div><div class="l">Still not coverable</div></div>
+          <div class="kpi"><div class="v">2</div><div class="l">Customers sharing this pool</div></div>
+          <div class="kpi"><div class="v">0</div><div class="l">Quantity promised twice</div></div>
+          <div class="kpi"><div class="v">1</div><div class="l">Line short after the division</div></div>
         </div>
         <p>Well Merlin-05 · CSG 7 29.0 L80 VAM 21 — Required 5,000, ROS 2027-09-09</p>
-        <p>Official verdict: <span class="badge b-bad">Uncovered (customer-scoped)</span> &nbsp; If shared within the BU: <span class="badge b-ok">Would be covered — projection</span></p>
+        <p>Verdict: <span class="badge b-bad">Uncovered</span> &nbsp; Reason: the steel on the shelf is reserved to another demand line in Oracle — releasing it is a step a person takes there, not here.</p>
       </div>
     </div>
   </div>

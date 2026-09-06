@@ -527,15 +527,16 @@ def test_no_seeded_customer_is_unmapped_and_the_reason_is_provable(seeded, clien
             on_hand_for(seeded, None, product)
 
         # C-07 RESOLVED: the unmapped customer no longer takes the whole grid
-        # down. The recompute isolates the failure per customer, the request
-        # succeeds for everyone else, and the skipped customer is NAMED so the
-        # gap can never pass silently.
+        # down. The recompute isolates the failure, the request succeeds for
+        # everyone else, and the skipped customer is NAMED -- with its own reason
+        # attached, since a bare name stopped identifying the cause once a whole
+        # pool could be skipped together (D01).
         response = client.get("/coverage", params={"status": "Planned"})
         assert response.status_code == 200, response.text
         body = response.json()
-        assert body["filters"]["skipped_customers"] == [
-            "Unmapped Operator (test-only)"
-        ]
+        (skipped,) = body["filters"]["skipped_customers"]
+        assert skipped.startswith("Unmapped Operator (test-only) -- ")
+        assert "not mapped to a Business Unit" in skipped
     finally:
         seeded.rollback()
         seeded.expire_all()

@@ -225,7 +225,7 @@ def _recompute_all(
     status_filter: set[DemandStatus],
     profile_filter: set[DemandProfile],
 ) -> tuple[str, ...]:
-    """Recompute every customer, ISOLATING per-customer failures (C-07 fix).
+    """Recompute every Business Unit, ISOLATING failures (C-07 fix).
 
     BOTH `InventoryNotScoped` shapes are isolated: a customer with no
     Business Unit (`InventoryScopeMissing` -- our own reference data) and a
@@ -236,28 +236,36 @@ def _recompute_all(
     skipped and NAMED -- the caller reports who was left out rather than
     failing everyone or hiding the gap.
     """
-    skipped: list[str] = []
-    for customer in customers:
-        try:
-            # NO SAVEPOINT around this, deliberately: pysqlite's transaction
-            # handling breaks SAVEPOINT semantics (a RELEASE can behave as a
-            # commit), which turned the read-only rollback into a persist --
-            # caught by test_scope_filter_api's rollback assertions. A failed
-            # customer may therefore leave partial in-transaction writes, but
-            # every caller of this function rolls the WHOLE transaction back
-            # (project_coverage / scoped_verdicts), so nothing persists; the
-            # only cost is that the skipped customer's harvested verdicts can
-            # be a mix of old and half-new for the duration of one response,
-            # and the response NAMES the customer as skipped.
-            recompute_customer(
-                db,
-                customer,
-                status_filter=status_filter,
-                profile_filter=profile_filter,
-            )
-        except InventoryNotScoped:
-            skipped.append(customer.name)
-    return tuple(sorted(skipped))
+    # ONE pass per Business Unit -- the unit of allocation since D01 -- and each
+    # entry NAMES ITS OWN REASON. It used to be a bare customer name, which the
+    # screens then diagnosed for themselves as "not mapped to a Business Unit";
+    # that was the only cause while the unit was the customer, and it is now
+    # wrong whenever a mapped Business Unit is missing one on-hand row and every
+    # customer sharing that pool is skipped together.
+    #
+    # NO SAVEPOINT is used inside, deliberately: pysqlite's transaction handling
+    # breaks SAVEPOINT semantics (a RELEASE can behave as a commit), which turned
+    # the read-only rollback into a persist. Every caller of this function rolls
+    # the WHOLE transaction back (project_coverage / scoped_verdicts), so nothing
+    # persists; the cost is that a skipped pool's harvested verdicts can be a mix
+    # of old and half-new for the duration of one response, and the response
+    # names it.
+    from app.engines.coverage import recompute_all_business_units
+
+    sweep = recompute_all_business_units(
+        db,
+        status_filter=status_filter,
+        profile_filter=profile_filter,
+        customers=customers,
+        use_savepoints=False,
+    )
+    return tuple(
+        sorted(
+            f"{name} -- {failure.reason}"
+            for failure in sweep.failures
+            for name in failure.customer_names
+        )
+    )
 
 
 def _harvest(

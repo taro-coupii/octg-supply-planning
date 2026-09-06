@@ -203,7 +203,7 @@ OCTG Supply Readiness Platform/
   octg-platform/
     backend/    FastAPI + SQLAlchemy + Alembic + pytest
       app/models/      SQLAlchemy models
-      app/engines/     domain logic (coverage, allocation, substitution, mrp, sharing, scenario, executive...)
+      app/engines/     domain logic (coverage, allocation, substitution, mrp, scenario, executive...)
       app/api/         FastAPI routers
       app/schemas/     Pydantic schemas (all in one __init__.py)
       alembic/versions/ migrations (20, head: f7c3a91b5e24; the count is the 8/9 record)
@@ -233,11 +233,11 @@ The discipline kept consistent across this codebase. New features follow it.
 
 1. **Never fabricate numbers.** Always distinguish "unknown" from "zero". Return `available: false` plus a `reason`, and never render it as a 0 or a dash (`InventoryOnHand` missing → a 424 exception; `InventoryOnOrder` missing → `available:false`; `CustomerOwnedInventory` not uploaded → `has_uploaded:false`).
 2. **Make invalid states unrepresentable.** Rather than validating against them, shape the model so they cannot exist (e.g. `demand_status` sits once on `Well` and not on `DemandLine`).
-3. **The BU is an absolute boundary; the Customer is the default boundary.** Inventory can never cross a BU. Customers are separated by default, and only read-only what-if analysis (cross-customer sharing) may cross, within a BU.
+3. **The BU is an absolute boundary and the unit of allocation.** Inventory can never cross a BU, and inside one it is divided ONCE across every customer below it, earliest ROS first (ruled 2026-09-06, D01). What stays customer-private is ownership, not pooling: customer-owned stock and Oracle assignments are never drawn by anyone else.
 4. **Customer-owned inventory is consumed before company-owned**, and is never shared with another customer (a stricter rule than the BU boundary).
 5. **The platform never creates, releases or overrides a hard reservation.** The Oracle family (`InventoryOnHand` / `InventoryAssignment` / `InventoryOnOrder`) is a read-only projection. Only `CustomerOwnedInventory` is platform-owned and writable.
 6. **Coverage is always written by the engine.** There is no manual setting. No `CoverageResult` means "not evaluated" — never "no problem".
-7. **One computation, one implementation.** Preview, scenario and sharing all call the same `compute_customer_coverage` and friends as production. No second implementation.
+7. **One computation, one implementation.** Preview and scenario call the same `compute_business_unit_coverage` as production. No second implementation.
 8. **Unit of measure is mandatory on every screen.** `Product.unit_of_measure` (Mtr/PC/MT). Aggregations over several products return a `quantities_by_unit` array, and never a scalar total or ratio when units are mixed.
 
 ---

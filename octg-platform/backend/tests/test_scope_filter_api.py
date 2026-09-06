@@ -156,7 +156,12 @@ def test_unmapped_customer_no_longer_breaks_the_grid(client_world):
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["filters"]["skipped_customers"] == ["Orphan Oil"]
+    # Each entry NAMES ITS OWN REASON now: the screens used to diagnose a bare
+    # customer name as "not mapped to a Business Unit", which stopped being the
+    # only cause when a whole pool became unevaluable together (D01).
+    (skipped,) = body["filters"]["skipped_customers"]
+    assert skipped.startswith("Orphan Oil -- ")
+    assert "not mapped to a Business Unit" in skipped
     # C-08: the grid states how old its verdicts are.
     assert body["verdicts_computed_from"] is not None
     assert body["verdicts_computed_to"] is not None

@@ -334,8 +334,8 @@ def _seed_synthetic_history(db, now):
     return len(lines)
 
 
-def _seed_sharing_scenario(db, now, bu_north, bu_gulf, soft_customer, hard_customer):
-    """Demonstrate the cross-customer sharing analysis AND the BU boundary.
+def _seed_bu_boundary_scenario(db, now, bu_north, bu_gulf, soft_customer, hard_customer):
+    """The Business Unit boundary, and what HARD withholds inside one.
 
     One product, three facts:
 
@@ -343,27 +343,24 @@ def _seed_sharing_scenario(db, now, bu_north, bu_gulf, soft_customer, hard_custo
       * There is no unscoped quantity anywhere -- `Product.on_hand_qty` no longer
         exists. Every figure in this seed is an `InventoryOnHand(BU, product)`
         row, which is the only thing the coverage engine can read.
-      * Norheim Energy (SOFT, BU North) demands 2000 and is Covered, so 7000 of
-        BU North's stock is genuine SURPLUS. Vestfjord Petroleum (HARD, BU North)
-        demands 5000 with NOTHING assigned, so under hard allocation it is
-        Uncovered even though the steel is on the shelf.
+      * Norheim Energy (SOFT, BU North) demands 2000. Vestfjord Petroleum (HARD,
+        BU North) demands 5000 with NOTHING assigned, so under hard allocation it
+        is Uncovered even though the steel is on the shelf -- and it stays
+        Uncovered under BU-wide allocation, because a hard line never draws on
+        the shared pool. That is the point of the case.
 
-    Expected analysis results:
+    What it demonstrates on screen:
 
-      GET /analysis/cross-customer-sharing?customer_id=<Vestfjord Petroleum>
-        -> Gannet-11's 5000 IS coverable: 7000 of surplus exists in BU North,
-           indicatively from Norheim Energy.
-      GET /analysis/cross-customer-sharing?customer_id=<Pelican Gulf Drilling>
-        -> Pelican Gulf Drilling sits in BU Gulf. BU Gulf's 50000 of this product is
-           never offered to BU North, and BU North's surplus is never offered to
-           BU Gulf. The boundary holds in both directions.
+      * BU Gulf's 50000 of this product is never offered to BU North, and BU
+        North's stock is never offered to BU Gulf. The boundary holds in both
+        directions -- it is the one wall D01 did not move.
+      * Inside BU North the pool is shared, but hard allocation still withholds:
+        the recommended action names the Oracle step rather than the shelf.
 
-    Note WHY B is the uncovered customer rather than A: soft allocation ignores
-    assignment rows entirely, so a soft customer always sees the whole BU figure
-    and can only be uncovered when the BU figure itself is too small -- in which
-    case there is no surplus to share either. The interesting sharing case needs
-    a customer whose own policy withheld stock that the BU nonetheless holds
-    spare, which is exactly what HARD does.
+    This seeded the cross-customer sharing what-if until that analysis was
+    retired (D01, 2026-09-06): with the pool divided across the BU there is no
+    neighbour's surplus left to ask about. The data is unchanged and still earns
+    its place -- it is the demo's only two-BU case.
     """
     product = Product(
         type="CSG", size="10-3/4", weight=60.7, grade="L80", grade_type="Carbon",
@@ -1917,12 +1914,12 @@ def run(reset: bool = False):
         # Business Units -- the outermost inventory boundary, never crossed.
         #
         #   North Sea Operations : Norheim Energy (SOFT) + Vestfjord Petroleum (HARD)
-        #                          -> two customers in ONE BU, so cross-customer
-        #                             sharing is meaningful between them.
+        #                          -> two customers in ONE BU, so they are
+        #                             allocated together and compete for its pool.
         #   Gulf Operations      : Pelican Gulf Drilling (HYBRID)
         #                          -> a DIFFERENT BU holding ample stock of the
-        #                             very product BU North is short of, which the
-        #                             sharing analysis must refuse to offer.
+        #                             very product BU North is short of, which no
+        #                             code path may ever offer across.
         bu_north = BusinessUnit(name="North Sea Operations")
         bu_gulf = BusinessUnit(name="Gulf Operations")
         db.add_all([bu_north, bu_gulf])
@@ -2155,13 +2152,13 @@ def run(reset: bool = False):
             db, now, bu_gulf
         )
 
-        share_product, surplus_well, needy_well = _seed_sharing_scenario(
+        share_product, surplus_well, needy_well = _seed_bu_boundary_scenario(
             db, now, bu_north, bu_gulf, customer, hard_customer
         )
 
         # The case that would have caught the cross-BU leak. Seeded after the
-        # sharing demo and given its OWN product, so it cannot perturb any verdict
-        # above.
+        # boundary demo and given its OWN product, so it cannot perturb any
+        # verdict above.
         indep_product, tern_well, skerry_well = _seed_two_bu_independence(
             db, now, bu_north, bu_gulf, customer, hybrid_customer
         )
@@ -2279,11 +2276,11 @@ def run(reset: bool = False):
             for well in wells:
                 print(f"  {label}: {well.name} -> {well.coverage_status}")
         print(
-            f"  sharing: product={share_product.id} "
+            f"  bu-boundary: product={share_product.id} "
             f"(BU North 9000 / BU Gulf 50000 -- no unscoped figure exists)"
         )
         for well in (surplus_well, needy_well):
-            print(f"  sharing: {well.name} -> {well.coverage_status}")
+            print(f"  bu-boundary: {well.name} -> {well.coverage_status}")
         print(
             f"  two-BU independence: product={indep_product.id} "
             "(BU North 7000 / BU Gulf 2000, both demanding 6000)"
@@ -2365,10 +2362,11 @@ def run(reset: bool = False):
             "on the dock would conclude the upload had been ignored."
         )
         print(
-            "      customer-owned stock is NEVER shareable: "
-            "GET /analysis/cross-customer-sharing never offers these quantities to "
-            "any other customer, in either direction. It is that customer's PROPERTY "
-            "-- a boundary tighter than the Business Unit boundary."
+            "      customer-owned stock is NEVER shareable: no other customer's "
+            "line can draw these quantities, in either direction, even though the "
+            "company pool around them is shared across the whole Business Unit. "
+            "It is that customer's PROPERTY -- a boundary tighter than the "
+            "Business Unit boundary."
         )
         print(
             "      'owns none' vs 'no upload' is demo-reachable BOTH ways: "
@@ -2426,13 +2424,14 @@ def run(reset: bool = False):
             "Covered by tests only, by design."
         )
         print(
-            "  try: GET /analysis/cross-customer-sharing?customer_id="
-            f"{hard_customer.id}  (expect Gannet-11 coverable from "
-            f"{customer.name}'s surplus)"
+            f"  try: GET /coverage?customer_id={hard_customer.id}  (expect "
+            "Gannet-11 Uncovered: a hard line never draws on the shared pool, "
+            "however much of it BU North holds)"
         )
         print(
-            "  try: GET /analysis/cross-customer-sharing?customer_id="
-            f"{hybrid_customer.id}  (expect BU Gulf never offered BU North stock)"
+            f"  try: GET /coverage?customer_id={hybrid_customer.id}  (expect BU "
+            "Gulf judged against its own stock alone -- the boundary D01 did not "
+            "move)"
         )
         counts = sorted(programme_line_counts.values())
         multi = [n for n in counts if n >= 3]

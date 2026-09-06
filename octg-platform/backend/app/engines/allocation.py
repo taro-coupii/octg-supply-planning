@@ -155,7 +155,7 @@ What that means per policy, and why HARD is the interesting one
 Accounting invariants, all preserved
 -----------------------------------
   * Customer-owned quantity is ADDITIVE to on-hand, never a carve-out of it. It is
-    not in `InventoryOnHand` at all, so `_unassigned_pool` is unchanged and an
+    not in `InventoryOnHand` at all, so the unassigned pool is unchanged and an
     assignment can never reserve customer-owned steel.
   * `remaining_pool` still means "free, unreserved COMPANY stock" and is untouched
     by a customer-owned draw. `remaining_customer_owned` is reported separately.
@@ -287,24 +287,45 @@ def allocate_detailed(
     assigned_qty_by_line: dict[str, float] | None = None,
     customer_owned_qty: float = 0.0,
 ) -> AllocationOutcome:
-    """Full allocation outcome: coverage flags plus residual accounting.
+    """Full allocation outcome for ONE customer's lines of ONE product.
 
-    `on_hand_qty` is the COMPANY-OWNED quantity available to this pool (already net
-    of any foreign assignment carve-out). `customer_owned_qty` is what the customer
-    itself owns of the same product, drawn FIRST under every policy -- see the
-    module docstring, including why HARD grants coverage from it with no Oracle
-    assignment.
+    A THIN ADAPTER over `allocate_business_unit`, which is the single
+    implementation of the allocation rules. It was three separate policy
+    functions until the Business Unit became the unit of allocation (D01); once
+    production stopped calling them they were a second implementation that only
+    the tests exercised, free to drift away from the rules actually being run.
+    The signature is kept because "one customer, one product" is a genuinely
+    useful thing to state directly, and because it is what the policy tests are
+    written against.
+
+    `on_hand_qty` is the COMPANY-OWNED quantity available to this pool (already
+    net of any foreign assignment carve-out); the assignments in
+    `assigned_qty_by_line` are a carve-out OF it, not additional steel.
+    `customer_owned_qty` is what the customer itself owns of the same product,
+    drawn FIRST under every policy -- see the module docstring, including why HARD
+    grants coverage from it with no Oracle assignment.
     """
     assigned = assigned_qty_by_line or {}
-    customer_owned = max(0.0, customer_owned_qty)
-
-    if policy == AllocationPolicy.SOFT:
-        return _allocate_soft(lines, on_hand_qty, customer_owned)
-    if policy == AllocationPolicy.HARD:
-        return _allocate_hard(lines, on_hand_qty, assigned, customer_owned)
-    if policy == AllocationPolicy.HYBRID:
-        return _allocate_hybrid(lines, on_hand_qty, assigned, customer_owned)
-    raise ValueError(f"Unknown allocation policy: {policy!r}")
+    customer = "__one__"
+    outcome = allocate_business_unit(
+        lines=lines,
+        company_on_hand=on_hand_qty,
+        total_assigned=sum(max(0.0, assigned.get(line.id, 0.0)) for line in lines),
+        assigned_by_line={
+            line.id: max(0.0, assigned.get(line.id, 0.0)) for line in lines
+        },
+        # Empty: the SOFT block exists so a soft customer's reservations stay out
+        # of a NEIGHBOUR's reach, and there is no neighbour here. Under SOFT the
+        # caller passes no assignments at all, which is the same statement.
+        assignment_block_by_customer={customer: 0.0},
+        customer_owned_by_customer={customer: max(0.0, customer_owned_qty)},
+        policy_by_customer={customer: policy},
+        customer_of_line={line.id: customer for line in lines},
+    )
+    outcome.remaining_customer_owned = (
+        outcome.remaining_customer_owned_by_customer.get(customer, 0.0)
+    )
+    return outcome
 
 
 def allocate_business_unit(
@@ -437,157 +458,3 @@ def allocate_business_unit(
     return outcome
 
 
-def _unassigned_pool(lines: list[DemandLine], on_hand_qty: float, assigned: dict[str, float]) -> float:
-    """The part of on_hand that is not reserved to any of these lines.
-
-    Assignments are a carve-out of on_hand, so this can only shrink it. Clamped
-    at zero because a projection that over-assigns relative to on-hand is an
-    upstream (Oracle) data problem, and pretending the pool is negative would
-    make coverage results nonsensical rather than merely pessimistic.
-    """
-    total_assigned = sum(max(0.0, assigned.get(line.id, 0.0)) for line in lines)
-    return max(0.0, on_hand_qty - total_assigned)
-
-
-def _allocate_soft(
-    lines: list[DemandLine], on_hand_qty: float, customer_owned_qty: float = 0.0
-) -> AllocationOutcome:
-    """Earliest-ROS-first greedy allocation over TWO ownership tiers.
-
-    PARTIAL CONSUMPTION: a line takes `min(quantity, what both tiers can give)`. It
-    is covered only if that equals its whole requirement, but the steel is drawn
-    either way -- see the module docstring for the ruling and the accepted
-    consequence.
-
-    OWNERSHIP PRIORITY: each line drains the customer-owned tier before touching the
-    company pool. Because both tiers are swept in the same earliest-ROS order, this
-    is identical to "exhaust customer-owned across every line, then exhaust the
-    pool"; the per-line form is written because it is the physical story -- the
-    truck is loaded from the customer's own pipe first.
-    """
-    owned = max(0.0, customer_owned_qty)
-    remaining = on_hand_qty
-    outcome = AllocationOutcome(
-        remaining_pool=on_hand_qty, remaining_customer_owned=owned
-    )
-    for line in sorted(lines, key=lambda l: l.ros_date):
-        from_owned = min(line.quantity, owned)
-        if from_owned > 0:
-            outcome.consumed_from_customer_owned[line.id] = from_owned
-            owned -= from_owned
-
-        shortfall = line.quantity - from_owned
-        from_pool = min(shortfall, remaining) if shortfall > 0 else 0.0
-        if from_pool > 0:
-            outcome.consumed_from_pool[line.id] = from_pool
-            remaining -= from_pool
-
-        outcome.covered[line.id] = (from_owned + from_pool) >= line.quantity
-    outcome.remaining_pool = max(0.0, remaining)
-    outcome.remaining_customer_owned = max(0.0, owned)
-    return outcome
-
-
-def _allocate_hard(
-    lines: list[DemandLine],
-    on_hand_qty: float,
-    assigned: dict[str, float],
-    customer_owned_qty: float = 0.0,
-) -> AllocationOutcome:
-    """Coverage from the physical assignment, plus the customer's OWN steel first.
-
-    No pool top-up, unchanged: unassigned COMPANY stock still does not cover a
-    hard-allocated line however much of it is on the shelf.
-
-    ROS order remains irrelevant to the assignment: lines do not compete for it,
-    because each can only ever draw on inventory already earmarked for it. The
-    CUSTOMER-OWNED tier is finite and therefore drawn in the order the caller passed
-    the lines -- which is the existing HARD contract for a scarce reservation, not a
-    new rule. HARD deliberately has no ROS-ordered competition to inherit.
-
-    WHY CUSTOMER-OWNED STOCK COVERS A HARD LINE WITH NO ORACLE ASSIGNMENT: Oracle
-    cannot assign inventory it does not know about, and it does not know
-    customer-owned material exists at all, so requiring an assignment would make
-    that material permanently unusable under HARD -- with no action available to
-    anybody that would ever fix it. The full argument, including why this does not
-    weaken HARD, is in the module docstring.
-
-    UNCHANGED by the partial-consumption ruling for the ASSIGNMENT: the ruling is
-    about which line wins a SHARED pool, and a hard-allocated line never touches the
-    shared pool. A customer-owned draw IS recorded partially, because the tier is
-    genuinely finite and genuinely spent -- the quantity is gone and a later line
-    will find it missing, which is exactly the condition that made partial recording
-    mandatory for the pool.
-    """
-    owned = max(0.0, customer_owned_qty)
-    outcome = AllocationOutcome(remaining_customer_owned=owned)
-    for line in lines:
-        from_owned = min(line.quantity, owned)
-        if from_owned > 0:
-            outcome.consumed_from_customer_owned[line.id] = from_owned
-            owned -= from_owned
-
-        shortfall = line.quantity - from_owned
-        available = max(0.0, assigned.get(line.id, 0.0))
-        covered = available >= shortfall
-        outcome.covered[line.id] = covered
-        if covered and shortfall > 0:
-            outcome.consumed_from_assignment[line.id] = shortfall
-    # Everything assigned stays reserved to its line whether or not it covered
-    # it; only genuinely unassigned stock is free for the fall-through. The
-    # customer-owned tier is NOT part of this -- it is not company stock and cannot
-    # be offered as a substitute to any other customer.
-    outcome.remaining_pool = _unassigned_pool(lines, on_hand_qty, assigned)
-    outcome.remaining_customer_owned = max(0.0, owned)
-    return outcome
-
-
-def _allocate_hybrid(
-    lines: list[DemandLine],
-    on_hand_qty: float,
-    assigned: dict[str, float],
-    customer_owned_qty: float = 0.0,
-) -> AllocationOutcome:
-    """Customer-owned first, then the assignment, then the unassigned remainder.
-
-    PARTIAL CONSUMPTION: the pool draw is `min(shortfall, pool)`, taken in
-    earliest-ROS order, and it happens whether or not it completes the line. See
-    the module docstring for the owner's worked example, the rationale, and the
-    accepted consequence that the covered-well count can fall.
-
-    The customer-owned tier sits BEFORE the assignment rather than between it and
-    the pool: the ruling is about priority of consumption, and burning an Oracle
-    reservation while the customer's own material sits on the dock is exactly the
-    order it exists to forbid.
-    """
-    outcome = AllocationOutcome()
-    pool = _unassigned_pool(lines, on_hand_qty, assigned)
-    owned = max(0.0, customer_owned_qty)
-
-    for line in sorted(lines, key=lambda l: l.ros_date):
-        from_owned = min(line.quantity, owned)
-        if from_owned > 0:
-            outcome.consumed_from_customer_owned[line.id] = from_owned
-            owned -= from_owned
-
-        from_assignment = min(
-            max(0.0, assigned.get(line.id, 0.0)), line.quantity - from_owned
-        )
-        if from_assignment > 0:
-            # Recorded even for a line that ends up uncovered: the assignment is
-            # this line's own steel and it is drawn on regardless.
-            outcome.consumed_from_assignment[line.id] = from_assignment
-
-        shortfall = line.quantity - from_owned - from_assignment
-        from_pool = min(shortfall, pool) if shortfall > 0 else 0.0
-        if from_pool > 0:
-            pool -= from_pool
-            outcome.consumed_from_pool[line.id] = from_pool
-
-        outcome.covered[line.id] = (
-            from_owned + from_assignment + from_pool
-        ) >= line.quantity
-
-    outcome.remaining_pool = max(0.0, pool)
-    outcome.remaining_customer_owned = max(0.0, owned)
-    return outcome

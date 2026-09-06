@@ -399,9 +399,9 @@ export default function CoverageWorkspace() {
 
       {data && data.filters.skipped_customers.length > 0 && (
         <p className="exec-scope-projection" role="status">
-          {data.filters.skipped_customers.join(", ")} could not be recomputed —
-          not mapped to a Business Unit, so no inventory pool exists. Their
-          wells keep their previous verdicts. Map them in Administration.
+          Could not be recomputed, so these wells keep the verdicts they already
+          had. Each entry names its own reason:{" "}
+          {data.filters.skipped_customers.join("; ")}
         </p>
       )}
 

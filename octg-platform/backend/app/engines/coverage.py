@@ -247,129 +247,6 @@ def _shortage_phrase(
     )
 
 
-def _assignment_context(
-    db: Session,
-    policy: AllocationPolicy,
-    included: list[DemandLine],
-    customer: Customer,
-    resolver: OverrideResolver = NO_OVERRIDES,
-) -> tuple[dict[tuple[str, str], float], dict[str, float]]:
-    """Load the Oracle-projected inventory assignments this pass needs.
-
-    Returns:
-      assigned_by_line     {(demand_line_id, product_id): qty} for `included`
-      reserved_by_product  {product_id: total qty assigned WITHIN THIS SCOPE}
-
-    SOFT: OWN assignments ignored, FOREIGN assignments carved out
-
-    (C-09 resolved 2026-08-12: the product owner ruled the own-product path
-    must deduct foreign hard assignments exactly as the substitute path does.
-    That is what this function already implements; the regression tests are
-    tests/test_allocation_policies.py::test_soft_is_constrained_by_another_customers_hard_assignment
-    and its siblings.)
-    ------------------------------------------------------------
-    Under SOFT the two maps answer two DIFFERENT questions, and the distinction is
-    the whole point:
-
-      * `assigned_by_line` is `{}`. An assignment on one of THIS customer's own
-        lines must not grant it coverage and must not be carved out of its own
-        pool, because that is precisely what soft allocation means -- "do not tie
-        my steel to specific wells of mine". Pooling is preserved exactly.
-      * `reserved_by_product` carries assignments on demand lines of OTHER
-        customers in this Business Unit, and this customer's own rows are excluded
-        entirely. That steel belongs to somebody else's demand line, and quietly
-        allocating it would be the platform overriding an Oracle fact -- the one
-        thing it must never do. Before this, SOFT returned `({}, {})` and a soft
-        line could be reported COVERED off steel hard-assigned to another
-        customer, which is the same violation the substitute path already blocks,
-        one level up.
-
-    The exclusion of this customer's own rows is load-bearing arithmetic, not
-    tidiness. `compute_customer_coverage` computes
-    `reserved_elsewhere = reserved_by_product[P] - sum(own_assigned.values())`, and
-    under SOFT `own_assigned` is all zeros because `assigned_by_line` is empty, so
-    whatever this function puts in `reserved_by_product` is subtracted IN FULL.
-    Returning the BU-wide total would therefore carve out this customer's own
-    assignments too, breaking pooling in the very case it is supposed to protect.
-
-    HARD and HYBRID are unchanged: `assigned_by_line` grants coverage, and
-    `reserved_by_product` is the BU-wide total (their own rows included), which the
-    subtraction above then removes again so only genuinely foreign reservations net
-    off. That is what keeps "reserved stock is never free pool" true for them even
-    when the reserving line stayed uncovered.
-
-    Scenario ASSIGNMENT overrides are applied here, and only here
-    ------------------------------------------------------------
-    `resolver` (app.engines.overrides) may restate the quantity assigned to an
-    in-pool line. When it does, the change is reflected in BOTH returned maps:
-    `assigned_by_line` gets the new figure, and `reserved_by_product` is adjusted
-    by the DELTA so the "reserved stock is never free pool" invariant survives --
-    raising an assignment must take that quantity out of the unassigned pool, not
-    conjure it from nowhere.
-
-    Two guards worth naming. An override on a line OUTSIDE this pool is ignored
-    (it is not this pass's business, and honouring it would let a scenario reach
-    into another customer's reservations). And under SOFT this function returns
-    before the resolver is ever consulted: an override may only restate an
-    assignment on an IN-POOL line, and under SOFT an in-pool assignment changes
-    nothing, so an assignment override on a soft customer correctly changes
-    nothing. Foreign reservations stay exactly as Oracle projected them -- a
-    scenario cannot release somebody else's assignment either.
-
-    `reserved_by_product` is BU-SCOPED, not system-wide
-    --------------------------------------------------
-    It used to sum every InventoryAssignment row in the database. That was a
-    cross-BU leak in the pessimistic direction: a reservation made against a
-    demand line in a DIFFERENT Business Unit -- drawing on that BU's completely
-    separate physical stock -- was netted off this BU's on-hand figure and could
-    push a line to Uncovered for no physical reason. Rows are now restricted to
-    demand lines owned by customers in this customer's inventory scope
-    (`app.engines.inventory.scoped_customer_ids`: the whole BU -- which raises for
-    an unmapped customer, since it has no pool). Reservations inside the scope
-    still net off in full, which is what keeps "reserved stock is never free pool"
-    true. Under SOFT the scope is narrowed one step further -- the BU MINUS this
-    customer -- for the arithmetic reason given above.
-    """
-    soft = policy == AllocationPolicy.SOFT
-    scope_ids = scoped_customer_ids(db, customer)
-    line_ids = {line.id for line in included}
-    assigned_by_line: dict[tuple[str, str], float] = defaultdict(float)
-    reserved_by_product: dict[str, float] = defaultdict(float)
-    query = (
-        db.query(InventoryAssignment)
-        .join(DemandLine, InventoryAssignment.demand_line_id == DemandLine.id)
-        .join(Well, DemandLine.well_id == Well.id)
-        .join(PlanningNode, Well.planning_node_id == PlanningNode.id)
-        .filter(PlanningNode.customer_id.in_(scope_ids))
-    )
-    if soft:
-        # FOREIGN only. This is the own-vs-foreign distinction, expressed once, in
-        # the query -- not as a subtraction afterwards, so there is no arithmetic
-        # for a later edit to get half-right.
-        query = query.filter(PlanningNode.customer_id != customer.id)
-    for row in query.all():
-        qty = max(0.0, row.quantity or 0.0)
-        reserved_by_product[row.product_id] += qty
-        if not soft and row.demand_line_id in line_ids:
-            assigned_by_line[(row.demand_line_id, row.product_id)] += qty
-
-    if soft:
-        # No `assigned_by_line` (pooling), and nothing here for a scenario
-        # assignment override to restate -- see the docstring.
-        return {}, dict(reserved_by_product)
-
-    for (line_id, product_id), new_qty in resolver.assignment_overrides().items():
-        if line_id not in line_ids:
-            continue
-        old_qty = assigned_by_line.get((line_id, product_id), 0.0)
-        assigned_by_line[(line_id, product_id)] = max(0.0, new_qty)
-        reserved_by_product[product_id] = max(
-            0.0, reserved_by_product.get(product_id, 0.0) - old_qty + max(0.0, new_qty)
-        )
-
-    return dict(assigned_by_line), dict(reserved_by_product)
-
-
 def _substitute_target_ids(db: Session, product_ids: set[str]) -> set[str]:
     """Products reachable as a technical substitute from any of `product_ids`.
 
@@ -410,9 +287,8 @@ def _hard_assigned_for_substitutes(
     must never do.
 
     The owner's ruling is narrow: the stock may be OFFERED as a candidate, but
-    the platform may not take it -- "the user must go into Oracle
-    themselves and release the hard assignment". So this query is deliberately
-    narrow too. It is used ONLY
+    the platform may not take it -- 「ユーザー自身でoracleに入ってハード割り当て
+    を外す必要あり」. So this query is deliberately narrow too. It is used ONLY
     for the substitution fall-through, for products this pool does not itself
     demand.
 
@@ -762,6 +638,11 @@ def _assignment_context_bu(
     assigned_by_line: dict[tuple[str, str], float] = defaultdict(float)
     total_by_product: dict[str, float] = defaultdict(float)
     block_by_customer: dict[tuple[str, str], float] = defaultdict(float)
+    # What each SOFT line contributes to its customer's block. Kept because a
+    # scenario override RESTATES that line's assignment rather than adding to it,
+    # and under SOFT the line's own figure is otherwise invisible -- it has been
+    # summed into the customer's pooled block and cannot be subtracted back out.
+    soft_line_assigned: dict[tuple[str, str], float] = defaultdict(float)
 
     rows = (
         db.query(InventoryAssignment, PlanningNode.customer_id)
@@ -777,6 +658,7 @@ def _assignment_context_bu(
         total_by_product[row.product_id] += qty
         if policy_by_customer.get(owner_id) == AllocationPolicy.SOFT:
             block_by_customer[(owner_id, row.product_id)] += qty
+            soft_line_assigned[(row.demand_line_id, row.product_id)] += qty
         elif row.demand_line_id in line_ids:
             assigned_by_line[(row.demand_line_id, row.product_id)] += qty
 
@@ -786,13 +668,19 @@ def _assignment_context_bu(
         owner_id = customer_of_line.get(line_id)
         new_qty = max(0.0, new_qty)
         if policy_by_customer.get(owner_id) == AllocationPolicy.SOFT:
-            # The override cannot be attributed to a single line's entitlement under
-            # SOFT (there is none), so it moves the customer's block and the total
-            # by the same delta -- leaving the customer's own availability unchanged
-            # and taking the difference out of the shared pool, which is where a
-            # raised reservation must come from.
-            old_qty = 0.0
-            block_by_customer[(owner_id, product_id)] += new_qty
+            # RESTATES this line's reservation, exactly as it does for the other
+            # policies -- `assignment_overrides()` carries an absolute quantity,
+            # not a delta. The line's old figure comes back out of the customer's
+            # pooled block and the new one goes in, so the customer's own
+            # availability is unchanged (block and total move together) and the
+            # difference is taken from, or returned to, the shared pool. Adding
+            # without subtracting counted the stored row twice: a no-op override
+            # then shrank the shared pool and moved a NEIGHBOUR's verdict.
+            old_qty = soft_line_assigned.get((line_id, product_id), 0.0)
+            block_by_customer[(owner_id, product_id)] = max(
+                0.0,
+                block_by_customer.get((owner_id, product_id), 0.0) - old_qty + new_qty,
+            )
         else:
             old_qty = assigned_by_line.get((line_id, product_id), 0.0)
             assigned_by_line[(line_id, product_id)] = new_qty
@@ -1343,19 +1231,31 @@ def compute_business_unit_coverage(
     pending_substitute_load: list[PendingSubstituteLoad] = []
     for to_product_id, lines_pending in sorted(pending_lines_by_product.items()):
         product = db.get(Product, to_product_id)
-        owners = {customer_of_line[l.id] for l in lines_pending}
-        available = remaining_shared.get(to_product_id, 0.0) + sum(
-            remaining_owned.get((owner, to_product_id), 0.0)
+        # A private residual is NOT contested: only its own customer's lines can
+        # reach it. So it is spent here on that customer's own pending lines, and
+        # what is left over is the claim on the SHARED tier -- the one quantity
+        # several customers can be promised at once, and therefore the only one an
+        # over-subscription figure may be about. Summing every pending customer's
+        # private stock into a single "available" number reported a real three-way
+        # contest as healthy, using steel two of the three could never draw.
+        private = {
+            owner: remaining_owned.get((owner, to_product_id), 0.0)
             + remaining_block.get((owner, to_product_id), 0.0)
-            for owner in owners
-        )
+            for owner in {customer_of_line[l.id] for l in lines_pending}
+        }
+        contested = 0.0
+        for pending_line in sorted(lines_pending, key=lambda l: l.ros_date):
+            owner = customer_of_line[pending_line.id]
+            from_private = min(pending_line.quantity, private.get(owner, 0.0))
+            private[owner] = private.get(owner, 0.0) - from_private
+            contested += max(0.0, pending_line.quantity - from_private)
         load = PendingSubstituteLoad(
             to_product_id=to_product_id,
             product_description=(product.description if product is not None else None),
             pending_line_count=len(lines_pending),
             pending_line_ids=tuple(l.id for l in lines_pending),
-            pending_required_qty=sum(l.quantity for l in lines_pending),
-            available_qty=max(0.0, available),
+            pending_required_qty=contested,
+            available_qty=max(0.0, remaining_shared.get(to_product_id, 0.0)),
         )
         pending_substitute_load.append(load)
         note = load.note
@@ -1622,6 +1522,7 @@ def recompute_all_business_units(
     status_filter: set[DemandStatus] | None = None,
     profile_filter: set[DemandProfile] | None = None,
     customers: list[Customer] | None = None,
+    use_savepoints: bool = True,
 ) -> RecomputeSweep:
     """Recompute every Business Unit touched by `customers` (all of them by default).
 
@@ -1641,7 +1542,12 @@ def recompute_all_business_units(
 
     Each BU's pass runs in its own SAVEPOINT so a failure part-way through cannot
     leave that BU's stored verdicts half-erased -- strictly worse than the ones
-    they were replacing.
+    they were replacing. `use_savepoints=False` turns that off for the ONE caller
+    that must not use them: `app.engines.coverage_view` recomputes read-only and
+    rolls the whole transaction back, and under pysqlite a SAVEPOINT RELEASE can
+    behave as a commit -- which would turn that projection into a persist. That
+    caller accepts a half-written pool for the duration of one response precisely
+    because it discards everything at the end.
     """
     if customers is None:
         customers = db.query(Customer).order_by(Customer.name).all()
@@ -1669,7 +1575,15 @@ def recompute_all_business_units(
                 # customer gets, raised here so it is reported rather than thrown.
                 scoped_customer_ids(db, members[0])
                 continue
-            with db.begin_nested():
+            if use_savepoints:
+                with db.begin_nested():
+                    computed = recompute_business_unit(
+                        db,
+                        business_unit,
+                        status_filter=status_filter,
+                        profile_filter=profile_filter,
+                    )
+            else:
                 computed = recompute_business_unit(
                     db,
                     business_unit,

@@ -186,3 +186,146 @@ def test_apply_keeps_the_promise_the_preview_made_across_the_business_unit(db_se
 
     assert dict(result.line_status_after) == promised
     assert _verdict(db_session, line_b) == CoverageStatus.COVERED
+
+
+# --------------------------------------------------------------------------
+# Two defects an adversarial review of this change found, each reproduced here
+# before it was fixed.
+# --------------------------------------------------------------------------
+
+
+def test_an_assignment_override_restates_a_soft_reservation_rather_than_adding_to_it(
+    db_session,
+):
+    """A no-op ASSIGNMENT override must move nobody.
+
+    `assignment_overrides()` carries an ABSOLUTE quantity. Under SOFT the
+    override used to be ADDED to the customer's pooled block while the stored row
+    was already in it, so restating a line's existing 2,000 as 2,000 counted it
+    twice, shrank the shared pool by 2,000 and flipped a NEIGHBOUR from Covered
+    to Uncovered in the preview -- a scenario that changed nothing, changing
+    somebody else's answer.
+    """
+    from app.engines.scenario import preview
+    from app.models import InventoryAssignment, ScenarioTargetKind
+    from tests.test_scenario_engine import _override, _scenario
+
+    bu = _bu(db_session)
+    product = _product(db_session)
+    _stock(db_session, bu, product, 6000)
+    a, node_a = _customer(db_session, name="Alpha", bu=bu, policy=AllocationPolicy.SOFT)
+    b, node_b = _customer(db_session, name="Bravo", bu=bu, policy=AllocationPolicy.SOFT)
+    line_a = _line(db_session, _well(db_session, node_a, "W-A"), product, quantity=3000, days_out=100)
+    line_b = _line(db_session, _well(db_session, node_b, "W-B"), product, quantity=3000, days_out=200)
+    db_session.add(
+        InventoryAssignment(
+            demand_line_id=line_a.id, product_id=product.id, quantity=2000,
+            source_system="synthetic",
+        )
+    )
+    db_session.flush()
+    recompute_business_unit(db_session, bu)
+    assert _verdict(db_session, line_a) == CoverageStatus.COVERED
+    assert _verdict(db_session, line_b) == CoverageStatus.COVERED
+
+    scenario = _scenario(db_session, a, "Restate the same assignment")
+    _override(
+        db_session, scenario,
+        target_kind=ScenarioTargetKind.ASSIGNMENT,
+        target_demand_line_id=line_a.id,
+        target_product_id=product.id,
+        field_name="quantity", value_number=2000,
+    )
+    by_line = {c.demand_line_id: c for c in preview(db_session, scenario).line_changes}
+    assert by_line[line_b.id].status_after == "Covered"
+    assert by_line[line_a.id].status_after == "Covered"
+    assert all(not c.changed for c in by_line.values())
+
+
+def test_over_subscription_counts_contested_steel_not_a_neighbours_property(db_session):
+    """The pending-substitute figure describes the SHARED tier and nothing else.
+
+    Three customers, each with a line pending approval on the same substitute,
+    2,000 of that substitute on the company shelf and 4,000 privately owned by
+    ONE of them. Adding every pending customer's private stock into one
+    "available" number reported a genuine contest as healthy, using steel two of
+    the three could never draw.
+    """
+    from app.models import (
+        CustomerOwnedInventory, CustomerSubstitutionRule, TechnicalSubstitution,
+    )
+
+    bu = _bu(db_session)
+    primary = _product(db_session, grade="13CR80")
+    substitute = _product(db_session, grade="13CR110")
+    _stock(db_session, bu, primary, 0)
+    _stock(db_session, bu, substitute, 2000)
+    db_session.add(
+        TechnicalSubstitution(from_product_id=primary.id, to_product_id=substitute.id)
+    )
+    owners = []
+    for name, days in (("Alpha", 100), ("Bravo", 200), ("Charlie", 300)):
+        customer, node = _customer(db_session, name=name, bu=bu)
+        _line(db_session, _well(db_session, node, f"W-{name}"), primary, quantity=2000, days_out=days)
+        db_session.add(
+            CustomerSubstitutionRule(
+                customer_id=customer.id, from_product_id=primary.id,
+                to_product_id=substitute.id, allowed=True,
+            )
+        )
+        owners.append(customer)
+    db_session.add(
+        CustomerOwnedInventory(
+            customer_id=owners[2].id, product_id=substitute.id, quantity=4000
+        )
+    )
+    db_session.flush()
+
+    computed = recompute_business_unit(db_session, bu)
+    load = {l.to_product_id: l for l in computed.pending_substitute_load}[substitute.id]
+
+    # Charlie's 4,000 covers its own line, so only Alpha and Bravo contest the
+    # company's 2,000 -- and that contest is real.
+    assert load.available_qty == 2000.0
+    assert load.pending_required_qty == 4000.0
+    assert load.over_subscribed is True
+    assert load.shortfall == 2000.0
+
+
+def test_over_assignment_cannot_manufacture_coverage(db_session):
+    """Reservations are entitlements to company steel, not steel of their own.
+
+    Oracle can hold more assignments than the Business Unit has metres, and a
+    scenario can invent that state deliberately. Without the physical cap in
+    `allocate_business_unit` each entitlement would be honoured in full and the
+    BU would promise 8,000 out of 5,000 -- the exact thing D01 abolished, wearing
+    a different hat.
+    """
+    from app.models import InventoryAssignment
+
+    bu = _bu(db_session)
+    product = _product(db_session)
+    _stock(db_session, bu, product, 5000)
+    a, node_a = _customer(db_session, name="Alpha", bu=bu, policy=AllocationPolicy.HARD)
+    b, node_b = _customer(db_session, name="Bravo", bu=bu, policy=AllocationPolicy.HARD)
+    line_a = _line(db_session, _well(db_session, node_a, "W-A"), product, quantity=4000, days_out=100)
+    line_b = _line(db_session, _well(db_session, node_b, "W-B"), product, quantity=4000, days_out=200)
+    for line in (line_a, line_b):
+        db_session.add(
+            InventoryAssignment(
+                demand_line_id=line.id, product_id=product.id, quantity=4000,
+                source_system="synthetic",
+            )
+        )
+    db_session.flush()
+
+    recompute_business_unit(db_session, bu)
+
+    # 8,000 reserved against 5,000 held: the earlier line gets its 4,000 and the
+    # later one is short, rather than both being told the steel is theirs.
+    assert _verdict(db_session, line_a) == CoverageStatus.COVERED
+    assert _verdict(db_session, line_b) != CoverageStatus.COVERED
+    drawn = (
+        line_a.coverage_result.drawn_company + line_b.coverage_result.drawn_company
+    )
+    assert drawn <= 5000

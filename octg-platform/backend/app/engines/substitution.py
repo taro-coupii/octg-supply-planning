@@ -108,7 +108,13 @@ class PendingSubstituteLoad:
     product_description: str | None
     pending_line_count: int
     pending_line_ids: tuple[str, ...]
+    #: What these lines would have to draw from the SHARED Business-Unit pool --
+    #: each line satisfied first from its own customer's private stock, which no
+    #: neighbour can reach and which therefore cannot be contested.
     pending_required_qty: float
+    #: The shared residual, and only that. A neighbour's own uploaded stock or its
+    #: pooled Oracle reservations are not available to these lines and must never
+    #: appear in a figure that says "approving all of them can succeed".
     available_qty: float
 
     @property

@@ -440,8 +440,7 @@ tbody tr:last-child td { border-bottom: none; }
 .badge-status-Applied { background: var(--ok-soft); color: var(--ok); }
 
 /* The what-if banner. Loud on purpose: a preview figure must never be mistaken
-   for the official coverage verdict. Mirrors the decision already made for the
-   cross-customer sharing panel. */
+   for the official coverage verdict. */
 .whatif-banner { border: 1px dashed var(--warn-text); background: var(--warn-soft); border-radius: var(--r-md); padding: 12px 14px; margin-bottom: 20px; }
 .whatif-tag { display: inline-block; background: var(--warn-text); color: var(--text-on-dark); font-size: var(--fs-caption); font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; border-radius: var(--r-sm); padding: 2px 7px; margin-bottom: 8px; }
 .whatif-banner p { margin: 0 0 6px; font-size: var(--fs-body); color: var(--warn-deep); }
@@ -1190,67 +1189,6 @@ td.empty { color: var(--text-faint); text-align: center; padding: 24px 12px; }
 .catalogue-table { min-width: 760px; }
 .catalogue-nodesc { display: block; font-size: var(--fs-caption); color: var(--unmodelled); margin-top: 2px; }
 .catalogue-degrade { margin: 18px 0 0; font-size: var(--fs-sm); color: var(--text-muted); line-height: 1.6; }
-
-/* ---------------------------------------------------------------------------
-   Cross-customer sharing what-if
-
-   Everything here nests inside `.whatif-banner`, so it inherits the dashed amber
-   projection frame that Scenarios and the Coverage workspace already use. That
-   reuse is the point: there is ONE visual language for "this is not the official
-   verdict", and this panel must not invent a second, softer one. The projected
-   outcome never borrows `badge-Covered` -- a green pill would read as the verdict
-   it contradicts.
-   --------------------------------------------------------------------------- */
-
-.share-panel { padding: 14px 16px; }
-.share-title { margin: 0 0 10px; font-size: var(--fs-md); color: var(--warn-deep); text-transform: none; letter-spacing: 0; }
-
-.share-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; margin: 14px 0; }
-.share-tile { border: 1px dashed var(--warn-line); background: var(--warn-soft); border-radius: var(--r-md); padding: 9px 11px; }
-.share-tile-label { font-size: var(--fs-caption); text-transform: uppercase; letter-spacing: var(--track-caption); color: var(--warn-deep); }
-.share-tile-value { font-size: var(--fs-xl); font-weight: 700; font-variant-numeric: tabular-nums; margin-top: 2px; color: var(--warn-deep); }
-.share-tile-note { font-size: var(--fs-caption); color: var(--warn-deep); margin-top: 1px; }
-.share-tile-would .share-tile-value { color: var(--ok); }
-.share-tile-wouldnt .share-tile-value { color: var(--bad); }
-
-.share-lines { display: flex; flex-direction: column; gap: 12px; }
-.share-line { background: var(--surface); border: 1px dashed var(--warn-line); border-left-width: 4px; border-left-style: solid; border-radius: var(--r-md); padding: 11px 13px; }
-.share-line-would { border-left-color: var(--ok); }
-.share-line-wouldnt { border-left-color: var(--bad); }
-.share-line-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
-.share-line-well { font-size: var(--fs-md); font-weight: 600; }
-.share-line-product { font-size: var(--fs-sm); color: var(--text-muted); }
-
-.share-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin: 0 0 10px; }
-.share-facts dt { font-size: var(--fs-caption); text-transform: uppercase; letter-spacing: var(--track-caption); color: var(--text-muted); }
-.share-facts dd { margin: 3px 0 0; font-size: var(--fs-body); font-weight: 600; }
-
-/* Never a solid green/red pill: dashed, to keep it visually a projection. */
-.share-verdict { display: inline-block; font-size: var(--fs-caption); font-weight: 700; border-radius: var(--r-sm); padding: 2px 7px; border: 1px dashed; }
-.share-verdict-would { color: var(--ok); border-color: var(--ok); background: var(--accent-soft); }
-.share-verdict-wouldnt { color: var(--bad); border-color: var(--bad); background: var(--bad-soft); }
-
-.share-numbers { display: flex; gap: 16px; flex-wrap: wrap; font-size: var(--fs-body); color: var(--text-secondary); }
-.share-binding strong { font-size: var(--fs-md); }
-.share-shortfall { color: var(--bad); }
-.share-explanation { margin: 10px 0 0; font-size: var(--fs-sm); color: var(--text-secondary); line-height: 1.6; background: var(--surface-sunken); border-radius: var(--r-sm); padding: 8px 10px; }
-
-.share-donors { margin-top: 10px; }
-.share-donors-label { font-size: var(--fs-caption); font-weight: 700; text-transform: uppercase; letter-spacing: var(--track-caption); color: var(--warn-deep); margin-bottom: 5px; }
-.share-donors ul { list-style: none; margin: 0; padding: 0; }
-.share-donors li { display: flex; justify-content: space-between; gap: 12px; font-size: var(--fs-body); padding: 4px 0; border-bottom: 1px solid var(--line-faint); }
-.share-donors li:last-child { border-bottom: none; }
-.share-donor-name { font-weight: 600; }
-.share-donors-note { margin: 7px 0 0; font-size: var(--fs-caption); color: var(--text-muted); line-height: 1.55; }
-.share-donors-none { margin: 10px 0 0; font-size: var(--fs-sm); color: var(--warn-deep); background: var(--warn-soft); border-left: 3px solid var(--warn); border-radius: 0 var(--r-sm) var(--r-sm) 0; padding: 8px 10px; line-height: 1.55; }
-
-.share-surplus { margin-top: 16px; background: var(--surface); border: 1px solid var(--warn-line); border-radius: var(--r-md); padding: 11px 13px; }
-.share-surplus-some { color: var(--ok); font-weight: 700; }
-.share-surplus-none { color: var(--text-faint); }
-
-
-.card-cta { padding: 10px 0 0; border-top: 1px solid var(--line-faint); margin-top: 4px; font-size: var(--fs-body); }
-.card-cta-note { display: block; font-size: var(--fs-caption); color: var(--text-muted); margin-top: 3px; line-height: 1.5; }
 
 /* ---------------------------------------------------------------------------
    Well header — dates, well-level status control
@@ -2316,10 +2254,9 @@ figure { box-shadow: none; }
 .home-row .badge { align-self: flex-start; flex-shrink: 0; }
 /* This footer carries sentences and links, not instrument readings. The mono
    uppercase treatment at 9.5px with .1em tracking is the right voice for a
-   one- or two-word label ("TOTAL TO ORDER") and the wrong one for
-   "Could any be covered by sharing within the business unit? Read-only
-   what-if; changes nothing." -- tracking that opens up a label closes down a
-   sentence. Prose gets the body face at caption size. */
+   one- or two-word label ("TOTAL TO ORDER") and the wrong one for a full
+   sentence -- tracking that opens up a label closes down a sentence. Prose gets
+   the body face at caption size. */
 .home-col-foot { font-size: var(--fs-caption); line-height: 1.55; color: var(--text-muted); margin-top: auto; padding-top: 6px; }
 .home-col-foot a { color: var(--accent); }
 .home-cards { display: flex; flex-direction: column; gap: var(--space-3); }
