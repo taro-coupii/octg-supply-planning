@@ -358,6 +358,8 @@ class ScenarioImpact:
     apply_blockers: tuple[str, ...] = ()
 
     is_what_if: bool = True
+    #: The scenario version this preview was computed for (F08).
+    scenario_version: int = 1
     notes: tuple[str, ...] = field(default_factory=tuple)
 
 
@@ -665,6 +667,7 @@ def preview(
         blockers = apply_blockers(scenario)
 
         impact = ScenarioImpact(
+            scenario_version=scenario.version or 1,
             scenario_id=scenario.id,
             scenario_name=scenario.name,
             scenario_status=scenario.status.value,

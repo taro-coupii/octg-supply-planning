@@ -768,13 +768,18 @@ function ApplyPanel({
   const [error, setError] = useState<string | null>(null);
 
   const blockers = impact?.apply_blockers ?? [];
-  const applicable = (impact?.applicable ?? false) && scenario.override_count > 0;
+  // The impact on screen must be the impact of THIS version of the scenario:
+  // an apply confirms what the planner saw, not what the scenario became.
+  const stale = impact !== null && impact.scenario_version !== scenario.version;
+  const applicable =
+    (impact?.applicable ?? false) && scenario.override_count > 0 && !stale;
 
   const run = async () => {
     setBusy(true);
     setError(null);
     try {
-      onApplied(await api.applyScenario(scenario.id));
+      if (!impact) return;
+      onApplied(await api.applyScenario(scenario.id, impact.scenario_version));
     } catch (e) {
       setError(String(e instanceof Error ? e.message : e));
     } finally {
@@ -794,6 +799,12 @@ function ApplyPanel({
               <li key={i}>{b}</li>
             ))}
           </ul>
+        </div>
+      ) : stale ? (
+        <div className="apply-blocked">
+          The coverage impact shown was computed for an earlier version of this
+          scenario. Reload the coverage impact and confirm against what it shows
+          now.
         </div>
       ) : (
         <div className="apply-warning">

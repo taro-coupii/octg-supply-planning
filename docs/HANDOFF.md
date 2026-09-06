@@ -506,3 +506,11 @@ An external adversarial review arrived with ten reproduced scenarios. **Nothing 
 **Noticed, awaiting a ruling (D-list)**: a line rescued by a substitute keeps its own product's **partial draw** and is charged in full against the substitute (`coverage.py` fall-through), so its breakdown can sum to more than its demand. Whether to release the partial draw or charge the substitute only the remainder is the owner's call. Recorded as C-17.
 
 **Next**: package 3 (F07 approval binding, F08 apply requires the previewed version) → C-15 (by-item BU scope) → rulings on D01/D02 and C-17.
+
+## 20. 2026-09-06: the adversarial review — package 3, "bind approvals and applies to their object"
+
+**Implemented (1 commit, 739 → 744 tests, migration `d9f1b6c83a27`, applied to dev.db)**:
+1. **F07** Approving an import override stores `override_approval_basis` -- a fingerprint of the target line's revision, quantity and ROS, the well's demand status, and the row's proposed values and decision. When the live side moves the approval has **lapsed**: it stays on the row as a record but no longer authorises the write, `requires_override_approval` is true again, and apply refuses with 409 naming the lapsed rows. Withdrawal clears the basis; an approval without one (pre-column) counts as lapsed. The old test ("a different conflict arriving later still passes on the per-row approval") was inverted, per the ruling.
+2. **F08** `Scenario.version` (+1 on metadata change, override add/delete, apply). The preview reports `scenario_version`; `POST /apply` requires `expected_version` (missing = 422, mismatch = 409 with nothing written). The editor sends the previewed version and disables apply, with the reason shown, while the impact on screen is stale.
+
+**Next**: C-15 (by-item BU scope) → rulings on D01/D02 and C-17 → C-12 / C-14 / login rate limiting.

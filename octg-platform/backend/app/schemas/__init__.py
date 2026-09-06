@@ -1569,6 +1569,10 @@ class DemandImportRowOut(BaseModel):
     #: Who actually approved: the authenticated user, recorded by the server (F09).
     override_approved_by_user_id: str | None = None
     override_approved_by_user_name: str | None = None
+    #: True when the approval was given against live data that has since changed
+    #: (F07). The approval is still shown as having happened; it no longer
+    #: authorises the write, and `requires_override_approval` is True again.
+    override_approval_lapsed: bool = False
 
     # ---- The BASELINE: what was live when this row was staged -------------
     #
@@ -1884,6 +1888,8 @@ class ScenarioSummaryOut(BaseModel):
     updated_at: datetime | None
     applied_at: datetime | None
     override_count: int
+    #: Bumped on every change; an apply must name the version it previewed (F08).
+    version: int = 1
     coverage_delta_wells: int | None = None
     coverage_delta_lines: int | None = None
     # Set when the preview for this row could not be computed. The list still
@@ -2088,9 +2094,24 @@ class ScenarioImpactOut(BaseModel):
     apply_blockers: list[str] = []
     is_what_if: bool
     notes: list[str] = []
+    #: The scenario version this impact was computed for. Send it back as
+    #: `expected_version` on apply (F08).
+    scenario_version: int = 1
 
     class Config:
         from_attributes = True
+
+
+class ScenarioApplyIn(BaseModel):
+    """POST /scenarios/{id}/apply body (F08).
+
+    `expected_version` is the `scenario_version` of the preview the planner is
+    confirming. A scenario whose version has moved since that preview is refused
+    with 409 and nothing is written -- the impact they reviewed is no longer the
+    impact they would get.
+    """
+
+    expected_version: int
 
 
 class ScenarioApplyOut(BaseModel):

@@ -139,7 +139,8 @@ def test_scenario_apply_attributes_the_approvals_it_decides(client_world):
         },
     )
     assert r.status_code in (200, 201), r.text
-    r = client.post(f"/scenarios/{sid}/apply")
+    version = client.get(f"/scenarios/{sid}/preview").json()["scenario_version"]
+    r = client.post(f"/scenarios/{sid}/apply", json={"expected_version": version})
     assert r.status_code == 200, r.text
     with sf() as db:
         rows = db.query(WellSubstitutionApproval).all()

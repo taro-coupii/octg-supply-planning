@@ -74,7 +74,9 @@ def test_a_foreign_scenario_is_invisible_and_immutable(planner_and_foreign):
     assert client.get(f"/scenarios/{f['scenario']}", headers=h).status_code == 403
     assert client.patch(f"/scenarios/{f['scenario']}", json={"name": "hijack"}, headers=h).status_code == 403
     assert client.get(f"/scenarios/{f['scenario']}/preview", headers=h).status_code == 403
-    assert client.post(f"/scenarios/{f['scenario']}/apply", headers=h).status_code == 403
+    assert client.post(
+        f"/scenarios/{f['scenario']}/apply", json={"expected_version": 1}, headers=h
+    ).status_code == 403
 
 
 def test_a_foreign_inventory_row_cannot_be_edited(planner_and_foreign):

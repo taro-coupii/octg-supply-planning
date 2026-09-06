@@ -60,6 +60,7 @@ from app.models import (
     ScenarioTargetKind,
 )
 from app.schemas import (
+    ScenarioApplyIn,
     OverrideFieldsOut,
     ScenarioApplyOut,
     ScenarioDetailOut,
@@ -128,6 +129,7 @@ def _summary(
         created_at=scenario.created_at,
         updated_at=scenario.updated_at,
         applied_at=scenario.applied_at,
+        version=scenario.version or 1,
         override_count=len(scenario.overrides),
         coverage_delta_wells=delta_wells,
         coverage_delta_lines=delta_lines,
@@ -269,6 +271,7 @@ def patch_scenario(
         scenario.status = body.status
 
     scenario.updated_at = datetime.utcnow()
+    scenario.version = (scenario.version or 1) + 1
     db.commit()
     db.refresh(scenario)
     return _detail(db, scenario)
@@ -352,6 +355,7 @@ def add_override(
 
     db.add(override)
     scenario.updated_at = datetime.utcnow()
+    scenario.version = (scenario.version or 1) + 1
     db.commit()
     db.refresh(override)
     return ScenarioOverrideOut.model_validate(override, from_attributes=True)
@@ -371,6 +375,7 @@ def delete_override(
 
     db.delete(override)
     scenario.updated_at = datetime.utcnow()
+    scenario.version = (scenario.version or 1) + 1
     db.commit()
     return None
 
@@ -408,6 +413,7 @@ def get_preview(scenario_id: str, db: Session = Depends(get_db)):
 @router.post("/{scenario_id}/apply", response_model=ScenarioApplyOut)
 def apply_scenario(
     scenario_id: str,
+    body: ScenarioApplyIn,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
@@ -421,8 +427,24 @@ def apply_scenario(
 
     The refusals happen before anything is written, so a rejected apply leaves the
     base plan exactly as it was.
+
+    `expected_version` must equal the scenario's current version (F08): the preview
+    reports the version it was computed for, and an apply confirms THAT impact. A
+    scenario edited since the preview answers 409 and writes nothing -- re-run the
+    preview and confirm what it now shows.
     """
     scenario = _get_scenario(db, scenario_id)
+    current = scenario.version or 1
+    if body.expected_version != current:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Scenario {scenario.name!r} has changed since the impact you "
+                f"reviewed (previewed version {body.expected_version}, current "
+                f"version {current}). Nothing was applied. Reload the coverage "
+                "impact and confirm the apply against what it shows now."
+            ),
+        )
     try:
         result = apply_to_base_plan(db, scenario, actor_user_id=user.id)
     except (ScenarioImmutable, ScenarioNotApplicable) as exc:

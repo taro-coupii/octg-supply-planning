@@ -198,6 +198,13 @@ class DemandImportRow(Base):
     # No FOREIGN KEY on purpose: this is the RECORD of who acted, and it must
     # survive that user later being removed. Resolved view-only.
     override_approved_by_user_id = Column(String(36), nullable=True)
+    #: WHAT was approved (F07, owner ruling 2026-09-06): a fingerprint of the
+    #: target line's revision and values, the well's demand status and this row's
+    #: proposed values at the moment of approval -- see
+    #: `app.engines.demand_import.approval_basis`. When the live state no longer
+    #: matches, the approval has LAPSED: it stays recorded (it happened) but no
+    #: longer authorises the write, and the row needs approving again.
+    override_approval_basis = Column(String, nullable=True)
 
     applied = Column(Boolean, nullable=False, default=False)
     applied_demand_line_id = Column(

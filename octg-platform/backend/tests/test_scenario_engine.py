@@ -1763,15 +1763,20 @@ def test_scenario_routes_end_to_end(db_session):
             f"/scenarios/{scenario_id}", json={"status": "Applied"}
         ).status_code == 400
 
-        applied = client.post(f"/scenarios/{scenario_id}/apply")
-        assert applied.status_code == 200
+        version = client.get(f"/scenarios/{scenario_id}/preview").json()["scenario_version"]
+        applied = client.post(
+            f"/scenarios/{scenario_id}/apply", json={"expected_version": version}
+        )
+        assert applied.status_code == 200, applied.text
         assert len(applied.json()["impact_record_ids"]) == 1
         assert dict(
             (a, b) for a, b in applied.json()["well_status_after"]
         )[well.id] == "Covered"
 
         # Applied is terminal, over HTTP too.
-        assert client.post(f"/scenarios/{scenario_id}/apply").status_code == 409
+        assert client.post(
+            f"/scenarios/{scenario_id}/apply", json={"expected_version": version + 1}
+        ).status_code == 409
         assert client.patch(
             f"/scenarios/{scenario_id}", json={"name": "nope"}
         ).status_code == 409

@@ -761,8 +761,12 @@ export const api = {
     deleteJSON(`/scenarios/${id}/overrides/${overrideId}`),
   getScenarioPreview: (id: string) =>
     getJSON<ScenarioImpact>(`/scenarios/${id}/preview`),
-  applyScenario: (id: string) =>
-    postDetail<ScenarioApplyResult>(`/scenarios/${id}/apply`, {}),
+  /** `expectedVersion` is the preview's `scenario_version`; a scenario edited
+   * since that preview is refused with 409 and nothing is written. */
+  applyScenario: (id: string, expectedVersion: number) =>
+    postDetail<ScenarioApplyResult>(`/scenarios/${id}/apply`, {
+      expected_version: expectedVersion,
+    }),
 
   getCustomers: () => getJSON<CustomerSummary[]>("/customers"),
   getCustomer: (id: string) => getJSON<CustomerSummary>(`/customers/${id}`),
@@ -1042,6 +1046,8 @@ export interface ScenarioSummary {
   updated_at: string | null;
   applied_at: string | null;
   override_count: number;
+  /** Bumped on every change; apply must name the version it previewed. */
+  version: number;
   /** Headline what-if delta: wells this scenario would move. */
   coverage_delta_wells: number | null;
   coverage_delta_lines: number | null;
@@ -1203,6 +1209,8 @@ export interface ScenarioImpact {
   apply_blockers: string[];
   /** Always true. Present so the UI can say so without inferring it. */
   is_what_if: boolean;
+  /** The scenario version this impact was computed for; send it on apply. */
+  scenario_version: number;
   notes: string[];
 }
 
@@ -1514,6 +1522,9 @@ export interface DemandImportRow {
   /** Who actually approved: the authenticated user, recorded by the server. */
   override_approved_by_user_id: string | null;
   override_approved_by_user_name: string | null;
+  /** The approval was given against live data that has since changed; it no
+   * longer authorises the write and the row needs approving again. */
+  override_approval_lapsed: boolean;
 
   /** What was live when the row was staged. baseline -> current -> file is three
    * values; the two-column diff only has room for two. */

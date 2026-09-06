@@ -398,11 +398,20 @@ def test_a_conflict_appearing_between_approval_and_apply_is_caught(client_world)
     # Approved for the status conflict... and then the line moves underneath.
     _revise_out_of_band(session_factory, w.l1_id, 5200)
     row = client.get(f"/demand-imports/{batch['id']}").json()["rows"][0]
-    # The status conflict is reported first and is approved, so apply proceeds -- the
-    # approval is per ROW, not per conflict kind, and that is stated rather than
-    # implied: a reviewer approving "override the live book for this row" has
-    # authorised the row.
+    # F07 (owner ruling 2026-09-06): the approval is bound to WHAT it approved --
+    # the line's revision and values and the well's status at the time. The line
+    # moved, so the approval has LAPSED: still recorded, no longer authorising.
     assert row["override_approved"] is True
+    assert row["override_approval_lapsed"] is True
+    assert row["requires_override_approval"] is True
+    refused = client.post(f"/demand-imports/{batch['id']}/apply")
+    assert refused.status_code == 409
+    assert "LAPSED" in refused.json()["detail"]["blocked_rows"][0]["conflict_detail"]
+
+    # Approving again, against the CURRENT state, re-binds it and apply proceeds.
+    assert _approve(client, batch["id"], row_id).status_code == 200
+    row = client.get(f"/demand-imports/{batch['id']}").json()["rows"][0]
+    assert row["override_approval_lapsed"] is False
     assert row["requires_override_approval"] is False
     assert client.post(f"/demand-imports/{batch['id']}/apply").status_code == 200
 

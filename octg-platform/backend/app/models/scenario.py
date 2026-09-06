@@ -56,6 +56,7 @@ agreement and the revision to it visible.
 import enum
 
 from sqlalchemy import (
+    Integer,
     Column,
     DateTime,
     Enum as SAEnum,
@@ -265,6 +266,11 @@ class Scenario(Base):
     # Set exactly once, by app.engines.scenario.apply_to_base_plan. Its presence
     # is what makes the scenario an immutable historical record.
     applied_at = Column(DateTime, nullable=True)
+    #: Bumped on EVERY change to the scenario (metadata, overrides, apply). A
+    #: preview reports the version it was computed for and an apply must name it
+    #: (adversarial review 2026-09-06, F08): the planner confirms the impact they
+    #: SAW, not whatever the scenario has become since.
+    version = Column(Integer, nullable=False, default=1, server_default="1")
 
     created_by_user = relationship(
         "User",

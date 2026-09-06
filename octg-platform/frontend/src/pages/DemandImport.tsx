@@ -229,7 +229,8 @@ function ConflictPanel({
   onPreview: () => void;
   onApprove: (approved: boolean) => void;
 }) {
-  const approved = row.override_approved;
+  const lapsed = row.override_approval_lapsed;
+  const approved = row.override_approved && !lapsed;
   return (
     <div className="import-conflict">
       <div className="import-conflict-head">
@@ -238,7 +239,11 @@ function ConflictPanel({
             approved ? " import-conflict-tag-approved" : ""
           }`}
         >
-          {approved ? "Override approved" : "Conflict"}
+          {approved
+            ? "Override approved"
+            : lapsed
+            ? "Approval lapsed — approve again"
+            : "Conflict"}
         </span>
         <span className="import-conflict-kind">
           {CONFLICT_TITLE[row.conflict_kind ?? ""] ?? "Disagrees with live data"}
@@ -252,6 +257,13 @@ function ConflictPanel({
           )}
       </div>
 
+      {lapsed && (
+        <p className="import-conflict-detail">
+          The live data this approval was given against has changed since. The
+          approval is kept as a record but no longer authorises the write: review
+          the impact again and approve against the current state.
+        </p>
+      )}
       <p className="import-conflict-detail">{row.conflict_detail}</p>
 
       <div className="import-conflict-diff">
@@ -971,7 +983,7 @@ export default function DemandImport() {
                 row.match_type === "New" && row.matched_demand_line_id !== null;
               const conflictClass = !row.is_conflict
                 ? ""
-                : row.override_approved
+                : row.override_approved && !row.override_approval_lapsed
                 ? " import-row-conflict import-row-conflict-approved"
                 : " import-row-conflict";
               return (

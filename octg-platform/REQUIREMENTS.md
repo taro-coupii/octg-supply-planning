@@ -210,8 +210,8 @@ notifications ordering deliberately left open until valuation lands.
    breakdown (demand / customer-owned / company / substitute / residual) as the MRP figure;
    F05 recompute every affected customer in the BU on an assignment change; F06 decided
    approvals immutable at the service layer (scenario apply included); F09 actor recorded
-   server-side~~ (all done 2026-09-06, package 2); F07 import approvals bound to the
-   revision they approved; F08 scenario apply requires the previewed version. Open
+   server-side; F07 import approvals bound to the revision they approved; F08 scenario
+   apply requires the previewed version~~ (all done 2026-09-06, packages 2 and 3). Open
    question from F04: a substitute-rescued line keeps its partial own-product draw and
    is charged whole against the substitute (C-17) — ruling needed
 3. Notifications — Teams/mail push (new uncovered wells, pending approvals, approaching

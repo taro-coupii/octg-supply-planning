@@ -30,6 +30,8 @@ from sqlalchemy.orm import Session, joinedload
 from app.auth.deps import get_current_user
 from app.db import get_db
 from app.engines.demand_import import (
+    approval_basis,
+    override_approval_lapsed,
     OPTIONAL_COLUMNS,
     REQUIRED_COLUMNS,
     DemandImportConflictUnapproved,
@@ -132,8 +134,10 @@ def _row_out(db: Session, row: DemandImportRow) -> DemandImportRowOut:
         conflict_detail=conflict.detail if conflict else None,
         conflict_cascade_line_count=conflict.cascade_line_count if conflict else 0,
         requires_override_approval=(
-            conflict is not None and not row.override_approved
+            conflict is not None
+            and (not row.override_approved or override_approval_lapsed(db, row))
         ),
+        override_approval_lapsed=override_approval_lapsed(db, row),
         override_approved=row.override_approved,
         override_approved_at=row.override_approved_at,
         override_approved_by=row.override_approved_by,
@@ -545,6 +549,7 @@ def set_row_override_approval(
         row.override_approved_at = datetime.utcnow()
         row.override_approved_by = (body.approved_by or "").strip() or None
         row.override_approved_by_user_id = user.id
+        row.override_approval_basis = approval_basis(db, row)
     else:
         # Cleared, not kept. A withdrawn approval that retained its timestamp and
         # attributor would read as an approval that had happened, which is the one
@@ -552,6 +557,7 @@ def set_row_override_approval(
         row.override_approved_at = None
         row.override_approved_by = None
         row.override_approved_by_user_id = None
+        row.override_approval_basis = None
     db.commit()
     db.refresh(row)
     return _row_out(db, row)

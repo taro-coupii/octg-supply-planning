@@ -176,7 +176,7 @@ row-cap decisions.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace as _dc_replace
 from datetime import date, datetime
 
 from sqlalchemy.orm import Session
@@ -868,9 +868,55 @@ def detect_conflict(db: Session, row: DemandImportRow) -> RowConflict | None:
     return None
 
 
+def approval_basis(db: Session, row: DemandImportRow) -> str:
+    """The fingerprint of WHAT an override approval authorises (F07).
+
+    The target line's revision number and current values, the well's demand
+    status, and this row's own proposed values and decision. An approval is a
+    decision about a specific disagreement between a specific file value and a
+    specific live value; if either side moves, the reviewer has not seen what the
+    row would now do, so the approval must lapse (owner ruling 2026-09-06 --
+    "bind the approval to what it approved; a change means re-approval").
+
+    Rendered as one stable string so it can be stored on the row and compared
+    later without a second schema.
+    """
+    parts = [
+        f"decision={row.decision.value}",
+        f"line={row.matched_demand_line_id or '-'}",
+        f"quantity={row.quantity!r}",
+        f"ros={row.ros_date.date().isoformat() if row.ros_date else '-'}",
+        f"status={row.status.value if row.status else '-'}",
+        f"profile={row.profile.value if row.profile else '-'}",
+    ]
+    line = db.get(DemandLine, row.matched_demand_line_id) if row.matched_demand_line_id else None
+    if line is not None:
+        parts.append(
+            f"line_rev={line.current_revision_no};line_qty={line.quantity!r};"
+            f"line_ros={line.ros_date.date().isoformat()}"
+        )
+    else:
+        parts.append("line_rev=-")
+    well = db.get(Well, row.well_id) if row.well_id else None
+    parts.append(f"well_status={well.demand_status.value if well is not None else '-'}")
+    return "|".join(parts)
+
+
+def override_approval_lapsed(db: Session, row: DemandImportRow) -> bool:
+    """True when the row is approved but the live state no longer matches what
+    was approved (F07). An approval written before the basis existed carries no
+    basis and is treated as lapsed too: nobody can say what it authorised."""
+    if not row.override_approved:
+        return False
+    return row.override_approval_basis != approval_basis(db, row)
+
+
 def requires_override_approval(db: Session, row: DemandImportRow) -> bool:
-    """True when `apply_batch` would refuse this row for want of an approval."""
-    return detect_conflict(db, row) is not None and not row.override_approved
+    """True when `apply_batch` would refuse this row for want of an approval --
+    unapproved, or approved against a state that has since changed (F07)."""
+    if detect_conflict(db, row) is None:
+        return False
+    return not row.override_approved or override_approval_lapsed(db, row)
 
 
 # ---------------------------------------------------------------------------
@@ -1153,8 +1199,25 @@ def apply_batch(db: Session, batch: DemandImportBatch) -> ApplyResult:
         ):
             continue
         conflict = detect_conflict(db, row)
-        if conflict is not None and not row.override_approved:
+        if conflict is None:
+            continue
+        if not row.override_approved:
             blocked.append((row.id, row.row_number, conflict))
+        elif override_approval_lapsed(db, row):
+            # Approved, but not THIS. The line or the well moved since the reviewer
+            # approved, so what they authorised no longer exists (F07).
+            blocked.append((
+                row.id,
+                row.row_number,
+                _dc_replace(
+                    conflict,
+                    detail=(
+                        "The override approval on this row has LAPSED: the live "
+                        "data it was approved against has changed since. "
+                        + conflict.detail
+                    ),
+                ),
+            ))
     if blocked:
         raise DemandImportConflictUnapproved(
             f"{len(blocked)} accepted row(s) of this batch conflict with the live "

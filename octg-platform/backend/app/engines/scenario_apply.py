@@ -328,6 +328,7 @@ def apply_to_base_plan(
     scenario.status = ScenarioStatus.APPLIED
     scenario.applied_at = applied_at
     scenario.updated_at = applied_at
+    scenario.version = (scenario.version or 1) + 1
     db.flush()
 
     notes.append(
