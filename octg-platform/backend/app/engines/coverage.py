@@ -358,8 +358,8 @@ def _hard_assigned_for_substitutes(
     must never do.
 
     The owner's ruling is narrow: the stock may be OFFERED as a candidate, but
-    the platform may not take it -- 「ユーザー自身でoracleに入ってハード割り当て
-    を外す必要あり」. So this query is deliberately narrow too. It is used ONLY
+    the platform may not take it -- "the user must go into Oracle themselves and
+    release the hard assignment". So this query is deliberately narrow too. It is used ONLY
     for the substitution fall-through, for products this pool does not itself
     demand.
 
